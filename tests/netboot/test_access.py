@@ -234,6 +234,10 @@ def check(f):
     require(sorted([b.get('attrs') for b in bindings], key=repr) == sorted([
         {'group': ADMINS, 'enabled': True}, {'policy': EXCLUSION, 'enabled': True}], key=repr),
         'only authentik Admins may pass, and the agent exclusion must apply')
+    # An entry with state absent keeps its attrs but makes Authentik delete
+    # the binding, so the attrs check above cannot see it. Omitted is present.
+    require(all(b.get('state', 'present') == 'present' for b in bindings),
+            'both bindings must stay present')
     require(len({b['identifiers'].get('order') for b in bindings}) == len(bindings),
             'bindings need distinct orders')
     # The change touches nothing else in Authentik: no group, user, flow or
@@ -456,6 +460,14 @@ class AccessContract(unittest.TestCase):
                 if not (e.get('identifiers', {}).get('target') == APP_REF
                         and e.get('attrs', {}).get('policy') == EXCLUSION)]
 
+        def admin_binding_absent(f):
+            self.entry(f, 'applications.yaml', id='binding-netbootxyz-admins')['state'] = 'absent'
+
+        def exclusion_binding_absent(f):
+            next(e for e in f['blueprints']['applications.yaml']
+                 if e.get('identifiers', {}).get('target') == APP_REF
+                 and e.get('attrs', {}).get('policy') == EXCLUSION)['state'] = 'absent'
+
         def skip_paths(f):
             self.entry(f, 'providers-proxy.yaml', id='proxy-netbootxyz')['attrs']['skip_path_regex'] = '^/socket.io/'
 
@@ -477,8 +489,8 @@ class AccessContract(unittest.TestCase):
             f['blueprints']['applications.yaml'].append({
                 'model': 'authentik_core.group', 'identifiers': {'name': 'netboot-editors'}})
 
-        for change in (any_mode, other_group, negated_or_extra_grant, no_exclusion, skip_paths,
-                       header_auth, outpost_dropped, outpost_member_lost, outpost_duplicated,
+        for change in (any_mode, other_group, negated_or_extra_grant, no_exclusion,
+                       admin_binding_absent, exclusion_binding_absent, skip_paths, header_auth, outpost_dropped, outpost_member_lost, outpost_duplicated,
                        group_membership):
             with self.subTest(change=change.__name__):
                 self.assertTrue(self.mutated(change))
