@@ -276,6 +276,17 @@ class ProbeProtocol(unittest.TestCase):
                 self.assertEqual(code, 1, out)
                 self.assertIn('not a complete PE file', out)
 
+    def test_probe_rejects_optional_header_too_short_for_its_magic(self):
+        # The section table follows a cut-down optional header; every other check passes.
+        for magic, optional in ((0x20B, 2), (0x10B, 95)):
+            short = bytearray(LOADER)
+            struct.pack_into('<H', short, 0x54, optional)  # SizeOfOptionalHeader
+            struct.pack_into('<H', short, 0x58, magic)
+            with self.subTest(magic=hex(magic), optional=optional):
+                code, out = self.run_probe(self.serve({'netboot.xyz.efi': bytes(short)}))
+                self.assertEqual(code, 1, out)
+                self.assertIn('optional header of %d bytes is too short' % optional, out)
+
     def test_probe_requires_single_port_for_the_menu(self):
         files = {'netboot.xyz.efi': LOADER, 'custom/custom.ipxe': MENU.encode()}
         server = self.serve(files, count=2, other_port_for={'custom/custom.ipxe'})
@@ -335,6 +346,18 @@ class HttpDeadline(unittest.TestCase):
                 self.assertRaisesRegex(probe.ProbeError, 'no complete response within'):
             probe.http_get('http://pxe.invalid/', timeout=0.5, deadline=0.8)
         self.assertLess(time.monotonic() - started, 1.3)
+
+    def test_dripped_proxy_connect_reply_stops_at_the_deadline(self):
+        # An https request through a proxy reads the CONNECT reply before TLS starts.
+        # The fake proxy drips that reply, so only the whole-request deadline stops it.
+        proxy = self.serve(body=b'x' * 1000, drip='headers')
+        url = f'http://127.0.0.1:{proxy.port}'
+        env = {'https_proxy': url, 'HTTPS_PROXY': url, 'no_proxy': '', 'NO_PROXY': ''}
+        started = time.monotonic()
+        with mock.patch.dict(os.environ, env), \
+                self.assertRaisesRegex(probe.ProbeError, 'no complete response within'):
+            probe.http_get('https://pxe.invalid/', timeout=1, deadline=0.5)
+        self.assertLess(time.monotonic() - started, 2)
 
     def test_redirect_body_is_not_read(self):
         # The redirect promises 10 MB, sends 10 bytes, then stalls. Following the

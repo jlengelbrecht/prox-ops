@@ -141,6 +141,9 @@ def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
                 error = exc
                 continue
             sock.settimeout(timeout)
+            sockets.append(sock)  # tracked before any proxy CONNECT reply is read
+            if expired.is_set():
+                cut(sock)
             return sock
         raise error
 
@@ -149,7 +152,7 @@ def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
             def connect(self):
                 self._create_connection = connect_within
                 super().connect()
-                sockets.append(self.sock)
+                sockets.append(self.sock)  # the TLS socket replaces the tracked one
                 if expired.is_set():
                     cut(self.sock)
         return Connection
@@ -226,10 +229,13 @@ def check_pe(body, name):
         fail('no PE signature')
     sections, optional = struct.unpack_from('<H12xH', body, pe + 6)
     table = pe + 24 + optional
-    if sections == 0 or optional < 2 or table + 40 * sections > len(body):
+    if sections == 0 or table + 40 * sections > len(body):
         fail('section table missing or cut off')
-    if struct.unpack_from('<H', body, pe + 24)[0] not in (0x10B, 0x20B):
+    magic = struct.unpack_from('<H', body, pe + 24)[0]
+    if magic not in (0x10B, 0x20B):
         fail('unknown optional header')
+    if optional < (96 if magic == 0x10B else 112):  # PE32 / PE32+ fields before data directories
+        fail(f'optional header of {optional} bytes is too short')
     for index in range(sections):
         size, offset = struct.unpack_from('<II', body, table + 40 * index + 16)
         if size and offset + size > len(body):
