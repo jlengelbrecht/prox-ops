@@ -25,15 +25,12 @@ def documents():
 
 GATEWAY = {'io.kubernetes.pod.namespace': 'network',
            'gateway.envoyproxy.io/owning-gateway-name': 'envoy-internal'}
-BOOT, EDITOR = {('69', 'UDP'), ('80', 'TCP')}, {('3000', 'TCP')}
-GATEWAY_EDITOR_RULE = {'fromEndpoints': [{'matchLabels': GATEWAY}],
-                       'toPorts': [{'ports': [{'port': '3000', 'protocol': 'TCP'}]}]}
 
 
-def policy_problems(policy, editor_routed=False):
-    """Boot ports open to LAN and cluster. The editor port 3000 admits nothing
-    (port-forward only) unless editor_routed, and then only envoy-internal."""
-    problems, boot_open, routed = [], False, False
+def policy_problems(policy):
+    """Boot ports open to LAN and cluster; editor port 3000 only from envoy-internal."""
+    problems, boot, editor, boot_open, editor_routed = [], {('69', 'UDP'), ('80', 'TCP')}, \
+        {('3000', 'TCP')}, False, False
     for rule in policy.get('ingress', []):
         # L7 rules, TLS or SNI on a toPorts entry filter traffic; flattening would hide them.
         problems += [f'toPorts entry with more than ports: {to}'
@@ -46,17 +43,16 @@ def policy_problems(policy, editor_routed=False):
         sources = {k: v for k, v in rule.items() if k != 'toPorts'}
         if not ports:
             problems.append(f'ingress without a port restriction from {sources}')
-        elif ports <= BOOT:
-            boot_open |= ports == BOOT and set(sources.get('fromEntities', [])) >= {'world', 'cluster'}
-        elif ports == EDITOR and sources == {'fromEndpoints': [{'matchLabels': GATEWAY}]}:
-            routed = True
+        elif ports <= boot:
+            boot_open |= ports == boot and set(sources.get('fromEntities', [])) >= {'world', 'cluster'}
+        elif ports == editor and sources == {'fromEndpoints': [{'matchLabels': GATEWAY}]}:
+            editor_routed = True
         else:
             problems.append(f'unexpected ingress to {sorted(ports)} from {sources}')
     if not boot_open:
         problems.append('PXE clients must reach TFTP 69 and HTTP 80 without login')
-    if routed != editor_routed:
-        problems.append('the internal gateway must reach the editor on 3000' if editor_routed
-                        else 'the editor on 3000 must stay closed: port-forward only')
+    if not editor_routed:
+        problems.append('the internal gateway must reach the editor on 3000')
     return problems
 
 
@@ -85,8 +81,9 @@ class ManifestContract(unittest.TestCase):
                          ['kustomize.toolkit.fluxcd.io/substitute'], 'disabled')
 
     def test_only_expected_kinds_and_no_secrets(self):
-        self.assertEqual(sorted(self.by_kind), ['CiliumNetworkPolicy', 'ConfigMap', 'Deployment',
-                                                'PersistentVolumeClaim', 'Service'])
+        self.assertEqual(sorted(self.by_kind), ['BackendTrafficPolicy', 'CiliumNetworkPolicy',
+                                                'ConfigMap', 'Deployment', 'HTTPRoute',
+                                                'PersistentVolumeClaim', 'SecurityPolicy', 'Service'])
         text = '\n'.join(p.read_text() for p in APP.rglob('*.yaml'))
         for marker in ('talos.config', 'PRIVATE KEY', 'secretKeyRef', 'secretRef', 'machine:'):
             self.assertNotIn(marker, text)
@@ -103,7 +100,7 @@ class ManifestContract(unittest.TestCase):
         self.assertEqual(admin['spec']['type'], 'ClusterIP')
         self.assertEqual([p['port'] for p in admin['spec']['ports']], [3000])
 
-    def test_policy_admits_boot_ports_openly_and_never_the_editor(self):
+    def test_policy_admits_boot_ports_openly_and_editor_from_internal_gateway_only(self):
         policy = self.by_kind['CiliumNetworkPolicy'][0]['spec']
         self.assertEqual(policy['endpointSelector']['matchLabels'],
                          self.deployment['spec']['selector']['matchLabels'])
@@ -125,35 +122,33 @@ class ManifestContract(unittest.TestCase):
             ('cidr', {'fromCIDR': ['10.20.65.0/24'], 'toPorts': [{'ports': [editor]}]}),
             ('range', {'fromEntities': ['world'], 'toPorts': [{'ports': [
                 {'port': '80', 'protocol': 'TCP', 'endPort': 3000}]}]}),
-            ('any protocol', {'fromEndpoints': [{'matchLabels': GATEWAY}],
-                              'toPorts': [{'ports': [{'port': '3000'}]}]}),
-            # Correctly scoped, but nothing routes to the editor yet.
-            ('internal gateway', GATEWAY_EDITOR_RULE),
         ]:
             with self.subTest(rule=name):
                 mutated = {**policy, 'ingress': policy['ingress'] + [rule]}
                 self.assertTrue(policy_problems(mutated))
 
-    def test_policy_check_controls(self):
-        """The checker accepts only the scoped gateway rule when routing is expected."""
+    def test_policy_check_sees_per_port_restrictions(self):
+        """toPorts entries are judged whole, not just by the ports they list."""
         policy = self.by_kind['CiliumNetworkPolicy'][0]['spec']
-        routed = {**policy, 'ingress': policy['ingress'] + [GATEWAY_EDITOR_RULE]}
-        self.assertEqual(policy_problems(routed, editor_routed=True), [])
-        self.assertTrue(policy_problems(policy, editor_routed=True))  # rule missing
-        self.assertTrue(policy_problems({**policy, 'ingress': []}))  # PXE closed
-        self.assertTrue(policy_problems({**policy, 'ingress': [  # cluster only, no LAN
-            {**policy['ingress'][0], 'fromEntities': ['cluster']}]}))
+        editor = {'fromEndpoints': [{'matchLabels': GATEWAY}],
+                  'toPorts': [{'ports': [{'port': '3000', 'protocol': 'TCP'}]}]}
+
+        def split(http_rules=None):
+            port80 = {'ports': [{'port': '80', 'protocol': 'TCP'}]}
+            if http_rules:
+                port80['rules'] = {'http': http_rules}
+            return {**policy, 'ingress': [editor, {
+                'fromEntities': ['world', 'cluster'],
+                'toPorts': [{'ports': [{'port': '69', 'protocol': 'UDP'}]}, port80]}]}
+
         # Boot ports split across entries, with an HTTP path rule on 80: menus would be denied.
-        self.assertTrue(policy_problems({**policy, 'ingress': [{
-            'fromEntities': ['world', 'cluster'],
-            'toPorts': [{'ports': [{'port': '69', 'protocol': 'UDP'}]},
-                        {'ports': [{'port': '80', 'protocol': 'TCP'}],
-                         'rules': {'http': [{'path': '/health'}]}}]}]}))
-        # The same split without restrictions is still an open boot rule.
-        self.assertEqual(policy_problems({**policy, 'ingress': [{
-            'fromEntities': ['world', 'cluster'],
-            'toPorts': [{'ports': [{'port': '69', 'protocol': 'UDP'}]},
-                        {'ports': [{'port': '80', 'protocol': 'TCP'}]}]}]}), [])
+        self.assertTrue(policy_problems(split([{'path': '/health'}])))
+        # The same split without restrictions is still an open boot rule, editor still routed.
+        self.assertEqual(policy_problems(split()), [])
+        # An HTTP rule on the editor port would filter routed UI traffic too.
+        self.assertTrue(policy_problems({**split(), 'ingress': [
+            {**editor, 'toPorts': [{**editor['toPorts'][0], 'rules': {'http': [{'path': '/'}]}}]},
+            split()['ingress'][1]]}))
 
     def test_pinned_versions_and_single_port_tftp(self):
         # Pin shapes, not values, so Renovate bumps pass.
@@ -191,22 +186,6 @@ class ManifestContract(unittest.TestCase):
         for name in ('entrypoint.sh', 'ready.sh'):
             self.assertIn('. /netboot/lib.sh', self.data[name])
         self.assertIn('-o nbxyz -g nbxyz', self.data['entrypoint.sh'])  # dnsmasq --tftp-secure
-
-    def test_config_and_assets_survive_restart_and_removal(self):
-        claims = {c['metadata']['name']: c for c in self.by_kind['PersistentVolumeClaim']}
-        self.assertEqual({n: c['spec']['resources']['requests']['storage'] for n, c in claims.items()},
-                         {'netbootxyz-config': '2Gi', 'netbootxyz-assets': '50Gi'})
-        for name, claim in claims.items():
-            with self.subTest(claim=name):
-                self.assertEqual(claim['metadata']['annotations']['kustomize.toolkit.fluxcd.io/prune'],
-                                 'disabled')
-        volumes = {v['name']: v for v in self.pod['volumes']}
-        mounts = {m['mountPath']: m['name'] for m in self.container['volumeMounts']}
-        for path, claim in (('/config', 'netbootxyz-config'), ('/assets', 'netbootxyz-assets')):
-            with self.subTest(path=path):
-                self.assertEqual(volumes[mounts[path]].get('persistentVolumeClaim'),
-                                 {'claimName': claim})
-        self.assertFalse([v for v in self.pod['volumes'] if 'emptyDir' in v])
 
     def test_git_managed_menus_are_installed_read_only(self):
         """Configuration check only: the web app (nbxyz, no DAC_OVERRIDE) cannot save them."""

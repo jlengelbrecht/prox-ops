@@ -1,0 +1,118 @@
+---
+# Management UI on one hostname, internal gateway only (no envoy-external
+# route, no Cloudflare record). Every rule of this route, including the
+# Socket.IO endpoint (/socket.io/, polling and WebSocket upgrade) that carries
+# all editor and download actions, is gated by securitypolicy.yaml with
+# Authentik forward auth. There is no API or health bypass. The only other
+# path on the hostname is the Authentik login/callback flow on
+# netbootxyz-outpost.
+#
+# Cross-site WebSocket: a page on any other *.homelab0.org host is same-site,
+# so the browser sends the Authentik session cookie with its WebSocket
+# handshake and forward auth admits it. The first two rules therefore accept a
+# /socket.io/ WebSocket upgrade only when Origin is exactly this hostname;
+# any other upgrade there matches the second rule, which has no backend, so
+# the gateway answers 500 and never reaches the pod. Both rules have the same
+# path and one header match each, so list order decides between them: keep
+# the Origin rule first. Socket.IO long-polling stays on the last rule:
+# browsers omit Origin on same-origin GETs. A cross-site page cannot read the
+# polling session id: CORS is off in the app, and the JSONP form (?j=) is
+# served as text/plain, which the X-Content-Type-Options: nosniff set below
+# stops browsers from executing as a script. Keep that header on this rule
+# (tests/netboot/test_access.py requires it on every rule with a backend).
+#
+# Boot delivery is not routed here: PXE clients keep using the LoadBalancer at
+# 10.20.67.28 (TFTP 69, HTTP 8080) with no login.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbootxyz
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: netboot.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - netboot.homelab0.org
+  rules:
+    # Socket.IO from the management page itself (WebSocket or polling).
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Origin
+              type: Exact
+              value: https://netboot.homelab0.org
+      backendRefs:
+        - name: netbootxyz-admin
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+    # Any other WebSocket upgrade on /socket.io/ (foreign or missing Origin):
+    # no backend, so the gateway returns 500.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Upgrade
+              type: RegularExpression
+              value: (?i)websocket
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: netbootxyz-admin
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Authentik outpost route for the netboot host (forward-auth login/callback
+# flow), matched on the outpost prefix only. No SecurityPolicy here (it would
+# loop) and it never reaches the netboot pod. The cross-namespace backendRef
+# is allowed by ReferenceGrant allow-network-namespace-extauth
+# (kubernetes/apps/security/authentik/app/referencegrant-network.yaml).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbootxyz-outpost
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - netboot.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
