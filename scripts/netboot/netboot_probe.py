@@ -41,10 +41,12 @@ class ProbeError(Exception):
 
 def tftp_get(host, port, filename, blksize=1468, timeout=3.0, retries=5,
              deadline=60.0, max_bytes=MAX_BYTES):
-    """Fetch one file in octet mode. Returns (bytes, server (ip, port))."""
+    """Fetch one file in octet mode. Returns (bytes, server (ip, port)).
+    The deadline includes the name lookup, which cannot be interrupted: a lookup
+    that returns late fails the transfer with the deadline error."""
+    end = time.monotonic() + deadline
     address = socket.gethostbyname(host)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    end = time.monotonic() + deadline
     request = (struct.pack('!H', RRQ) + filename.encode() + b'\0octet\0'
                + b'blksize\0' + str(blksize).encode() + b'\0')
     last, dest = request, (address, port)
@@ -116,16 +118,36 @@ def tftp_get(host, port, filename, blksize=1468, timeout=3.0, retries=5,
 
 def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
     """GET an http(s) URL. timeout bounds each socket wait; deadline bounds the
-    whole request, redirects, headers and body included."""
+    whole request: connection setup, redirects, headers and body. A name lookup
+    cannot be interrupted, so one that returns late fails the request instead."""
     sockets, expired = [], threading.Event()
 
     def cut(sock):
         with contextlib.suppress(OSError):
             sock.shutdown(socket.SHUT_RDWR)  # wakes a blocked read with EOF
 
+    def connect_within(address, timeout, source_address=None):
+        # socket.create_connection, but each resolved address gets only the time
+        # left, so connection setup cannot outlast the deadline.
+        error = TimeoutError(f'no connection within {deadline}s')
+        for *_, sockaddr in socket.getaddrinfo(*address, type=socket.SOCK_STREAM):
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                sock = socket.create_connection(sockaddr[:2], min(timeout, remaining),
+                                                source_address)
+            except OSError as exc:
+                error = exc
+                continue
+            sock.settimeout(timeout)
+            return sock
+        raise error
+
     def tracked(base):
         class Connection(base):
             def connect(self):
+                self._create_connection = connect_within
                 super().connect()
                 sockets.append(self.sock)
                 if expired.is_set():
@@ -141,6 +163,13 @@ def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
             return self.do_open(tracked(http.client.HTTPSConnection), req,
                                 context=self._context)
 
+    class Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new is not None:
+                fp.close()  # the stock handler would read the whole redirect body
+            return new
+
     def expire():
         expired.set()
         for sock in list(sockets):
@@ -148,18 +177,19 @@ def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
 
     # Only http and https: any other scheme, including a redirect to one, fails.
     opener = urllib.request.OpenerDirector()
-    for handler in (urllib.request.ProxyHandler(), Http(), Https(),
-                    urllib.request.HTTPRedirectHandler(), urllib.request.HTTPDefaultErrorHandler(),
+    for handler in (urllib.request.ProxyHandler(), Http(), Https(), Redirect(),
+                    urllib.request.HTTPDefaultErrorHandler(),
                     urllib.request.HTTPErrorProcessor(), urllib.request.UnknownHandler()):
         opener.add_handler(handler)
+    end = time.monotonic() + deadline
     timer = threading.Timer(deadline, expire)
     timer.start()
     try:
         with opener.open(url, timeout=min(timeout, deadline)) as response:
             body = response.read(max_bytes + 1)
-            status = response.status
+            status, missing = response.status, response.length
     except (OSError, http.client.HTTPException):
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= end:
             raise ProbeError(f'{url}: no complete response within {deadline}s') from None
         raise
     finally:
@@ -169,6 +199,8 @@ def http_get(url, timeout=10.0, deadline=60.0, max_bytes=MAX_BYTES):
         raise ProbeError(f'{url}: no complete response within {deadline}s')
     if len(body) > max_bytes:
         raise ProbeError(f'{url}: larger than {max_bytes} bytes')
+    if missing:  # bytes still owed under Content-Length; None when no length was sent
+        raise ProbeError(f'{url}: response ended {missing} bytes short of its Content-Length')
     return status, body
 
 

@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('netboot_probe', ROOT / 'scripts/netboot/netboot_probe.py')
@@ -108,23 +109,33 @@ class FakeTftp(threading.Thread):
 
 class FakeHttp(threading.Thread):
     """Answers one GET. drip='headers' or 'body' sends the response from that point one
-    byte every 0.05 s; the drip gives up after 4 s or when the client goes away."""
+    byte every 0.05 s; the drip gives up after 4 s or when the client goes away.
+    length overrides the Content-Length header. first, if given, is sent raw on an
+    earlier connection, which is then held open until the client lets go of it."""
 
-    def __init__(self, body=b'ok', drip=None):
+    def __init__(self, body=b'ok', drip=None, length=None, first=None):
         super().__init__(daemon=True)
-        self.body, self.drip = body, drip
+        self.body, self.drip, self.first = body, drip, first
+        self.length = len(body) if length is None else length
         self.sock = socket.create_server(('127.0.0.1', 0))
         self.sock.settimeout(5)
         self.port = self.sock.getsockname()[1]
 
     def run(self):
         with self.sock, contextlib.suppress(OSError):
+            if self.first is not None:
+                conn, _ = self.sock.accept()
+                with conn, contextlib.suppress(OSError):
+                    conn.settimeout(4)
+                    conn.recv(65536)
+                    conn.sendall(self.first)
+                    conn.recv(1)  # returns once the client closes, or times out
             conn, _ = self.sock.accept()
             with conn:
                 conn.settimeout(5)
                 conn.recv(65536)
                 head = (b'HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n'
-                        % len(self.body))
+                        % self.length)
                 response = head + self.body
                 start = {None: len(response), 'headers': 0, 'body': len(head)}[self.drip]
                 conn.sendall(response[:start])
@@ -186,6 +197,20 @@ class ProbeProtocol(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeError, 'deadline'):
             probe.tftp_get('127.0.0.1', server.port, 'x', timeout=3, retries=1, deadline=0.3)
         self.assertLess(time.monotonic() - started, 0.9)
+
+    def test_slow_name_lookup_counts_against_the_deadline(self):
+        # The server answers at once with a complete file, so only time spent
+        # resolving the host can make this transfer miss its deadline.
+        server = self.serve({}, reply=struct.pack('!HH', 3, 1) + b'MZ')
+        resolve = socket.gethostbyname
+
+        def slow_lookup(host):
+            time.sleep(0.5)
+            return resolve(host)
+
+        with mock.patch.object(probe.socket, 'gethostbyname', slow_lookup), \
+                self.assertRaisesRegex(probe.ProbeError, 'deadline'):
+            probe.tftp_get('127.0.0.1', server.port, 'x', timeout=1, retries=1, deadline=0.3)
 
     def test_upper_case_oack_option_is_honoured(self):
         body, _ = self.fetch(self.serve({'netboot.xyz.efi': LOADER}, oack_name=b'BLKSIZE'))
@@ -294,6 +319,37 @@ class HttpDeadline(unittest.TestCase):
                 with self.assertRaisesRegex(probe.ProbeError, 'no complete response within'):
                     probe.http_get(f'http://127.0.0.1:{server.port}/', timeout=1, deadline=0.5)
                 self.assertLess(time.monotonic() - started, 2)
+
+    def test_connection_setup_stops_at_the_deadline(self):
+        # Three resolved addresses that each stall for the full connect timeout, as
+        # with dropped SYNs. Together they would take 1.5 s against a 0.8 s deadline.
+        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 9))] * 3
+
+        def stalled(address, timeout, source_address=None):
+            time.sleep(timeout)
+            raise TimeoutError('timed out')
+
+        started = time.monotonic()
+        with mock.patch.object(probe.socket, 'getaddrinfo', return_value=addresses), \
+                mock.patch.object(probe.socket, 'create_connection', stalled), \
+                self.assertRaisesRegex(probe.ProbeError, 'no complete response within'):
+            probe.http_get('http://pxe.invalid/', timeout=0.5, deadline=0.8)
+        self.assertLess(time.monotonic() - started, 1.3)
+
+    def test_redirect_body_is_not_read(self):
+        # The redirect promises 10 MB, sends 10 bytes, then stalls. Following the
+        # Location must neither wait for nor buffer that body.
+        first = (b'HTTP/1.1 302 Found\r\nLocation: /loader\r\nContent-Length: 10000000\r\n'
+                 b'Connection: close\r\n\r\n' + b'x' * 10)
+        server = self.serve(body=b'ok', first=first)
+        self.assertEqual(probe.http_get(f'http://127.0.0.1:{server.port}/', timeout=1, deadline=3,
+                                        max_bytes=100),
+                         (200, b'ok'))
+
+    def test_body_shorter_than_content_length_fails(self):
+        server = self.serve(body=b'x', length=100)
+        with self.assertRaisesRegex(probe.ProbeError, '99 bytes short of its Content-Length'):
+            probe.http_get(f'http://127.0.0.1:{server.port}/', timeout=1, deadline=3)
 
 
 class CommandLine(unittest.TestCase):
