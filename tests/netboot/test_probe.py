@@ -44,7 +44,8 @@ MENU = ('#!ipxe\nset talos_schematic abc\nset talos_version v1.14.5\n'
 class FakeTftp(threading.Thread):
     """Serves read requests. single_port=False answers from a new port, like plain dnsmasq;
     other_port_for does that only for the named files; reply_host answers from another
-    address; reply sends those raw bytes instead; delay waits before answering."""
+    address; reply sends those raw bytes, or that list of packets, instead; delay waits
+    before answering."""
 
     def __init__(self, files, single_port=True, honour_blksize=True, drop_first_data=False,
                  count=1, reply_host='127.0.0.1', reply=None, delay=0, oack_name=b'blksize',
@@ -81,7 +82,8 @@ class FakeTftp(threading.Thread):
 
     def answer(self, sock, client, name, options):
         if self.reply is not None:
-            sock.sendto(self.reply, client)
+            for packet in [self.reply] if isinstance(self.reply, bytes) else self.reply:
+                sock.sendto(packet, client)
             return
         if name not in self.files:
             sock.sendto(struct.pack('!HH', 5, 1) + b'File not found\0', client)
@@ -222,6 +224,15 @@ class ProbeProtocol(unittest.TestCase):
                  (struct.pack('!H', 6) + b'blksize\x0065464\0', 'offered blksize 65464'))
         for reply, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(probe.ProbeError, message):
+                self.fetch(self.serve({}, reply=reply))
+
+    def test_block_larger_than_block_size_is_rejected(self):
+        # An oversized block 1, then an empty block 2 that would end the transfer:
+        # 512 bytes is the limit without an OACK, the agreed size with one.
+        for oack, size in (((), 512), ((struct.pack('!H', 6) + b'blksize\x008\0',), 8)):
+            reply = [*oack, struct.pack('!HH', 3, 1) + b'x' * (size + 1), struct.pack('!HH', 3, 2)]
+            with self.subTest(size=size), \
+                    self.assertRaisesRegex(probe.ProbeError, f'block 1 holds {size + 1} bytes'):
                 self.fetch(self.serve({}, reply=reply))
 
     def run_probe(self, server, *extra):

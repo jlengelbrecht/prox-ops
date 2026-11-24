@@ -102,6 +102,9 @@ def tftp_get(host, port, filename, blksize=1468, timeout=3.0, retries=5,
             block = struct.unpack('!H', packet[2:4])[0]
             payload = packet[4:]
             if block == expected & 0xFFFF:
+                if len(payload) > size:  # RFC 1350/2348: never more than the block size
+                    raise ProbeError(f'{filename}: block {block} holds {len(payload)} bytes, '
+                                     f'more than {size}')
                 data += payload
                 if len(data) > max_bytes:
                     raise ProbeError(f'{filename}: larger than {max_bytes} bytes')
