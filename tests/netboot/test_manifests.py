@@ -118,6 +118,7 @@ class ManifestContract(unittest.TestCase):
         loader = good['netboot.xyz.efi']
         broken = [('menu.ipxe', b'<html>404</html>'), ('boot.cfg', b''),
                   ('netboot.xyz.efi', loader[:-1]), ('netboot.xyz.efi', loader[:600]),
+                  ('netboot.xyz.efi', loader[:88]),  # ends where the section table starts
                   ('netboot.xyz.efi', b'<html>404</html>'), ('netboot.xyz.efi', b'MZ' + bytes(2000))]
         for name, body in [(None, None)] + broken:
             with self.subTest(file=name, size=body and len(body)), \

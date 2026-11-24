@@ -21,11 +21,12 @@ data:
       size=$(stat -c %s "$f") off=$(u "$f" 60 4)
       [[ "$(u "$f" "$off" 4)" == 17744 ]] || return 1  # "PE\0\0"
       n=$(u "$f" $((off + 6)) 2) table=$((off + 24 + $(u "$f" $((off + 20)) 2)))
+      ((n > 0 && table + 40 * n <= size)) || return 1  # whole section table present
       for ((i = 0; i < n; i++)); do
         end=$(($(u "$f" $((table + 40 * i + 20)) 4) + $(u "$f" $((table + 40 * i + 16)) 4)))
         ((end > max)) && max=$end
       done
-      ((n > 0 && max <= size))
+      ((max <= size))
     }
     ipxe() { [[ "$(head -c6 "$1" 2>/dev/null)" == '#!ipxe' ]]; }
     # release DIR: the parts of a netboot.xyz release that UEFI clients load.
