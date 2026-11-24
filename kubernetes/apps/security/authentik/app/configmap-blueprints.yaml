@@ -544,10 +544,12 @@ data:
       # netboot.xyz management UI - Forward Auth. The editor has no login of
       # its own and changes what PXE clients boot, so authentik is the only
       # gate. No skip paths: Socket.IO and every API call stay behind it.
-      # Browser-only: header auth is off, so app passwords and API tokens
-      # (Authorization Basic/Bearer) never open the editor; only an
-      # interactive session does. Bound to the embedded outpost by
-      # outposts.yaml below.
+      # Browser-only. intercept_header_auth is off, but on its own that does
+      # not stop the outpost's forward-auth check from accepting
+      # Authorization Basic/Bearer credentials. The gateway does that:
+      # netbootxyz/app/httproute.yaml answers 403 to any request on the
+      # hostname that carries an Authorization header, before forward auth
+      # runs. Bound to the embedded outpost by outposts.yaml below.
       - model: authentik_providers_proxy.proxyprovider
         id: proxy-netbootxyz
         identifiers:

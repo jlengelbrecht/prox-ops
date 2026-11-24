@@ -1,5 +1,6 @@
 """Safety and exposure contract for the netboot.xyz PXE server manifests."""
 
+import copy
 import pathlib
 import re
 import struct
@@ -56,6 +57,130 @@ def policy_problems(policy):
     return problems
 
 
+def nosniff_problems(route):
+    """Every rule that reaches a backend must set X-Content-Type-Options: nosniff."""
+    problems = []
+    for index, rule in enumerate(route['spec'].get('rules', [])):
+        if not rule.get('backendRefs'):
+            continue
+        headers = [header for flt in rule.get('filters', [])
+                   if flt.get('type') == 'ResponseHeaderModifier'
+                   for header in flt.get('responseHeaderModifier', {}).get('set', [])]
+        if {'name': 'X-Content-Type-Options', 'value': 'nosniff'} not in headers:
+            problems.append(f'rule {index} must set X-Content-Type-Options: nosniff')
+    return problems
+
+
+HOST = 'netboot.homelab0.org'
+DENY = 'deny-authorization'
+DENY_FILTER = [{'type': 'ExtensionRef', 'extensionRef': {
+    'group': 'gateway.envoyproxy.io', 'kind': 'HTTPRouteFilter', 'name': 'netbootxyz-deny-authorization'}}]
+
+
+def precedence(route_match):
+    """Envoy Gateway 1.9 route order (internal/gatewayapi/sort.go), highest first.
+
+    Path type (Exact > RegularExpression > PathPrefix), path length ('/' counts
+    0), header match count, then Exact header match count. Ties keep list
+    order; Python's sort with reverse=True is stable, like sort.Stable there.
+    """
+    path = route_match.get('path', {'type': 'PathPrefix', 'value': '/'})
+    headers = route_match.get('headers', [])
+    return ({'Exact': 2, 'RegularExpression': 1}.get(path.get('type', 'PathPrefix'), 0),
+            0 if path == {'type': 'PathPrefix', 'value': '/'} else len(path['value']),
+            len(headers), sum(h.get('type', 'Exact') == 'Exact' for h in headers))
+
+
+def matches_request(route_match, path, headers):
+    want = route_match.get('path', {'type': 'PathPrefix', 'value': '/'})
+    prefix, bare = want['value'], path.split('?')[0]
+    if want.get('type', 'PathPrefix') != 'PathPrefix':
+        raise AssertionError(f'precedence model only covers PathPrefix: {want}')
+    if not (prefix == '/' or bare == prefix.rstrip('/') or bare.startswith(prefix.rstrip('/') + '/')):
+        return False
+    for header in route_match.get('headers', []):
+        value = headers.get(header['name'].lower())
+        if value is None:
+            return False
+        if header.get('type', 'Exact') == 'Exact' and value != header['value']:
+            return False
+        if header.get('type') == 'RegularExpression' and not re.fullmatch(header['value'], value):
+            return False
+    return True
+
+
+def selected_rule(routes, path, headers):
+    """(route name, rule name) the gateway picks for a request on this hostname."""
+    candidates = sorted(((precedence(m), route['metadata']['name'], rule.get('name'), m)
+                         for route in routes for rule in route['spec']['rules']
+                         for m in rule['matches']), key=lambda c: c[0], reverse=True)
+    headers = {k.lower(): v for k, v in headers.items()}
+    return next(((route, rule) for _, route, rule, m in candidates
+                 if matches_request(m, path, headers)), None)
+
+
+def expected_rule(path, headers):
+    def under(prefix):
+        bare = path.split('?')[0]
+        return bare == prefix or bare.startswith(prefix + '/')
+
+    if headers.get('Authorization'):
+        return ('netbootxyz-outpost' if under('/outpost.goauthentik.io') else 'netbootxyz', DENY)
+    if under('/outpost.goauthentik.io'):
+        return ('netbootxyz-outpost', 'outpost')
+    if under('/socket.io') and headers.get('Origin') == f'https://{HOST}':
+        return ('netbootxyz', 'socket-io')
+    if under('/socket.io') and headers.get('Upgrade'):
+        return ('netbootxyz', 'websocket-deny')
+    return ('netbootxyz', 'editor')
+
+
+REQUESTS = [(path, {k: v for k, v in (('Origin', origin), ('Upgrade', upgrade),
+                                      ('Authorization', auth)) if v})
+            for path in ('/', '/menus', '/socket.io/?EIO=4&transport=polling',
+                         '/socket.io/?EIO=4&transport=websocket', '/socket.io',
+                         '/outpost.goauthentik.io/auth/envoy', '/outpost.goauthentik.io/callback')
+            for origin in (None, f'https://{HOST}', 'https://evil.homelab0.org')
+            for upgrade in (None, 'websocket', 'WebSocket')
+            for auth in (None, 'Basic YWRtaW46eA==', 'Bearer x', 'bearer x', 'x')]
+
+
+def authorization_problems(docs):
+    """Requests carrying Authorization get the 403 rule; forward auth covers every backend rule."""
+    problems = []
+    routes = [d for d in docs if d['kind'] == 'HTTPRoute']
+    for path, headers in REQUESTS:
+        got, want = selected_rule(routes, path, headers), expected_rule(path, headers)
+        if got != want:
+            problems.append(f'{path} {sorted(headers)} goes to {got}, expected {want}')
+    for route in routes:
+        rules = route['spec']['rules']
+        names = [rule.get('name') for rule in rules]
+        if None in names or len(set(names)) != len(names):
+            problems.append(f'{route["metadata"]["name"]}: every rule needs a unique name')
+        deny = [rule for rule in rules if rule.get('name') == DENY]
+        if len(deny) != 1 or rules[:1] != deny:
+            problems.append(f'{route["metadata"]["name"]}: {DENY} must be the first rule')
+        for rule in deny:
+            if rule.get('backendRefs') or rule.get('filters') != DENY_FILTER:
+                problems.append(f'{route["metadata"]["name"]}: {DENY} must only return the 403 filter')
+    filters = [d for d in docs if d['kind'] == 'HTTPRouteFilter']
+    if [(f['metadata']['name'], f['spec'].get('directResponse', {}).get('statusCode')) for f in filters] \
+            != [('netbootxyz-deny-authorization', 403)]:
+        problems.append('the deny filter must be a 403 direct response')
+    ui = next((r for r in routes if r['metadata']['name'] == 'netbootxyz'), {'spec': {'rules': []}})
+    backend_rules = [rule.get('name') for rule in ui['spec']['rules'] if rule.get('backendRefs')]
+    targets = [ref for d in docs if d['kind'] == 'SecurityPolicy' for ref in d['spec']['targetRefs']]
+    if any(ref.get('name') != 'netbootxyz' or 'sectionName' not in ref for ref in targets):
+        # A whole-route target would run forward auth ahead of the 403 rule.
+        problems.append('forward auth must target UI rules by sectionName only')
+    sections = [ref.get('sectionName') for ref in targets]
+    if (None in backend_rules or set(sections) != set(backend_rules)
+            or len(set(sections)) != len(sections) or len(sections) != len(backend_rules)):
+        problems.append(f'forward auth targets {sections}, rules with a backend are {backend_rules}')
+    return problems
+
+
 def topf_talos_version():
     return re.search(r'^talosVersion:\s*v(\S+)$', (ROOT / 'talos/topf.yaml').read_text(),
                      re.M).group(1)
@@ -83,7 +208,8 @@ class ManifestContract(unittest.TestCase):
     def test_only_expected_kinds_and_no_secrets(self):
         self.assertEqual(sorted(self.by_kind), ['BackendTrafficPolicy', 'CiliumNetworkPolicy',
                                                 'ConfigMap', 'Deployment', 'HTTPRoute',
-                                                'PersistentVolumeClaim', 'SecurityPolicy', 'Service'])
+                                                'HTTPRouteFilter', 'PersistentVolumeClaim',
+                                                'SecurityPolicy', 'Service'])
         text = '\n'.join(p.read_text() for p in APP.rglob('*.yaml'))
         for marker in ('talos.config', 'PRIVATE KEY', 'secretKeyRef', 'secretRef', 'machine:'):
             self.assertNotIn(marker, text)
@@ -99,6 +225,91 @@ class ManifestContract(unittest.TestCase):
                          {(69, 'UDP'), (8080, 'TCP')})
         self.assertEqual(admin['spec']['type'], 'ClusterIP')
         self.assertEqual([p['port'] for p in admin['spec']['ports']], [3000])
+
+    def test_editor_rules_set_nosniff(self):
+        """nosniff stops a cross-site <script> running the text/plain JSONP polling reply."""
+        route = next(r for r in self.by_kind['HTTPRoute'] if r['metadata']['name'] == 'netbootxyz')
+        self.assertEqual(nosniff_problems(route), [])
+        # Negative control: dropping the header from the catch-all rule must fail.
+        stripped = copy.deepcopy(route)
+        modifier = stripped['spec']['rules'][-1]['filters'][0]['responseHeaderModifier']
+        modifier['set'] = [h for h in modifier['set'] if h['name'] != 'X-Content-Type-Options']
+        self.assertTrue(nosniff_problems(stripped))
+
+    def test_authorization_header_never_reaches_forward_auth(self):
+        """The outpost accepts Basic/Bearer whatever intercept_header_auth says (authentik
+        2026.8.5 internal/outpost/proxyv2/application/auth.go checkAuth), so the gateway
+        answers 403 first, and forward auth is attached only to rules with a backend."""
+        self.assertEqual(authorization_problems(self.docs), [])
+        self.assertEqual(len(REQUESTS), 7 * 3 * 3 * 5)
+
+    def test_authorization_guard_weakening_is_rejected(self):
+        def ui(docs):
+            return next(d for d in docs if d['kind'] == 'HTTPRoute'
+                        and d['metadata']['name'] == 'netbootxyz')['spec']['rules']
+
+        def outpost(docs):
+            return next(d for d in docs if d['kind'] == 'HTTPRoute'
+                        and d['metadata']['name'] == 'netbootxyz-outpost')['spec']['rules']
+
+        def policy(docs):
+            return next(d for d in docs if d['kind'] == 'SecurityPolicy')['spec']
+
+        def origin_match_dropped(docs):  # Origin rule (Exact) would outrank a regex-only deny
+            del ui(docs)[0]['matches'][0]
+
+        def socket_match_dropped(docs):
+            del ui(docs)[0]['matches'][1]
+
+        def root_match_dropped(docs):
+            del ui(docs)[0]['matches'][2]
+
+        def deny_after_websocket_deny(docs):
+            rules = ui(docs)
+            rules.insert(2, rules.pop(0))
+
+        def empty_value_matches(docs):
+            for m in ui(docs)[0]['matches']:
+                m['headers'][0]['value'] = 'Basic .*'
+
+        def outpost_deny_removed(docs):
+            del outpost(docs)[0]
+
+        def deny_given_backend(docs):
+            ui(docs)[0]['backendRefs'] = [{'name': 'netbootxyz-admin', 'port': 3000}]
+
+        def filter_allows(docs):
+            next(d for d in docs if d['kind'] == 'HTTPRouteFilter')['spec']['directResponse'][
+                'statusCode'] = 200
+
+        def whole_route_target(docs):
+            for ref in policy(docs)['targetRefs']:
+                del ref['sectionName']
+
+        def deny_targeted(docs):
+            policy(docs)['targetRefs'].append({**policy(docs)['targetRefs'][0], 'sectionName': DENY})
+
+        def editor_untargeted(docs):
+            policy(docs)['targetRefs'] = [r for r in policy(docs)['targetRefs']
+                                          if r['sectionName'] != 'editor']
+
+        def new_backend_rule_untargeted(docs):
+            rule = copy.deepcopy(ui(docs)[-1])
+            rule['name'] = 'api'
+            rule['matches'] = [{'path': {'type': 'PathPrefix', 'value': '/api/'}}]
+            ui(docs).append(rule)
+
+        def unnamed_rule(docs):
+            del ui(docs)[1]['name']
+
+        for change in (origin_match_dropped, socket_match_dropped, root_match_dropped,
+                       deny_after_websocket_deny, empty_value_matches, outpost_deny_removed,
+                       deny_given_backend, filter_allows, whole_route_target, deny_targeted,
+                       editor_untargeted, new_backend_rule_untargeted, unnamed_rule):
+            with self.subTest(change=change.__name__):
+                docs = copy.deepcopy(self.docs)
+                change(docs)
+                self.assertTrue(authorization_problems(docs))
 
     def test_policy_admits_boot_ports_openly_and_editor_from_internal_gateway_only(self):
         policy = self.by_kind['CiliumNetworkPolicy'][0]['spec']

@@ -13,9 +13,12 @@ does not depend on Authentik.
   on every path, including Socket.IO (`/socket.io/`), which carries the
   dashboard, menu editor and asset downloads. Only members of
   `authentik Admins` pass (`app-netbootxyz` in the Authentik blueprints).
-  Everyone else is sent to sign-in or denied. Header authentication is off
-  for this provider: app passwords and API tokens do not open the editor,
-  only an interactive browser session does.
+  Everyone else is sent to sign-in or denied. Only an interactive browser
+  session opens the editor. The Authentik outpost would accept app passwords
+  and API tokens sent in an `Authorization` header even with header
+  authentication off, so the gateway answers 403 to any request on this
+  hostname that carries `Authorization` (the `deny-authorization` rules in
+  `httproute.yaml`), and forward auth never sees it.
 - The Socket.IO WebSocket upgrade is accepted only from
   `https://netboot.homelab0.org` (exact `Origin` match in `httproute.yaml`);
   an upgrade from any other origin, or with none, gets a gateway 500, so a
