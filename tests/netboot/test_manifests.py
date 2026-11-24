@@ -75,6 +75,119 @@ HOST = 'netboot.homelab0.org'
 DENY = 'deny-authorization'
 DENY_FILTER = [{'type': 'ExtensionRef', 'extensionRef': {
     'group': 'gateway.envoyproxy.io', 'kind': 'HTTPRouteFilter', 'name': 'netbootxyz-deny-authorization'}}]
+PARENT = [{'name': 'envoy-internal', 'namespace': 'network', 'sectionName': 'https'}]
+AUTHENTIK = [{'name': 'authentik-server', 'namespace': 'security', 'port': 80}]
+# The only backend each route may reach. The outpost route has no forward auth
+# (it would loop), so it must never point at the editor.
+BACKENDS = {'netbootxyz': [{'name': 'netbootxyz-admin', 'port': 3000}], 'netbootxyz-outpost': AUTHENTIK}
+TARGET = {'group': 'gateway.networking.k8s.io', 'kind': 'HTTPRoute', 'name': 'netbootxyz'}
+CHECK_PATH = '/outpost.goauthentik.io/auth/envoy'
+ROUTE_FIELDS = {'parentRefs', 'hostnames', 'rules'}
+RULE_FIELDS = {'name', 'matches', 'filters', 'backendRefs'}
+
+
+def match_problems(where, match):
+    """Only explicit PathPrefix plus Exact/RegularExpression headers are modelled.
+
+    method, queryParams or a defaulted path/type would change what Envoy matches
+    while the matrix below ignored it, so they are reported instead.
+    """
+    if not isinstance(match, dict) or 'path' not in match or set(match) - {'path', 'headers'}:
+        extra = sorted(set(match) - {'path', 'headers'}) if isinstance(match, dict) else match
+        return [f'{where}: match needs a path; unsupported match fields {extra}']
+    path, headers = match['path'], match.get('headers', [])
+    if not (isinstance(path, dict) and set(path) == {'type', 'value'} and path['type'] == 'PathPrefix'
+            and str(path['value']).startswith('/')):
+        return [f'{where}: path must be an explicit PathPrefix: {path}']
+    if not (isinstance(headers, list) and all(
+            isinstance(h, dict) and set(h) == {'name', 'type', 'value'}
+            and h['type'] in ('Exact', 'RegularExpression') for h in headers)):
+        return [f'{where}: headers must be explicit Exact or RegularExpression matches: {headers}']
+    return []
+
+
+def rule_problems(route_name, rule):
+    """A rule is a 403 deny, the backend-less websocket-deny, or a rule to this route's one backend."""
+    if not isinstance(rule, dict):
+        return [f'{route_name}: malformed rule {rule}']
+    name, where, problems = rule.get('name'), f'{route_name}/{rule.get("name")}', []
+    if set(rule) - RULE_FIELDS:
+        problems.append(f'{where}: unsupported rule fields {sorted(set(rule) - RULE_FIELDS)}')
+    if not isinstance(rule.get('matches'), list) or not rule['matches']:
+        problems.append(f'{where}: needs explicit matches (none would match every path)')
+    else:
+        problems += [p for m in rule['matches'] for p in match_problems(where, m)]
+    if name == DENY:
+        if 'backendRefs' in rule or rule.get('filters') != DENY_FILTER:
+            problems.append(f'{route_name}: {DENY} must only return the 403 filter')
+    elif name == 'websocket-deny':
+        # Checked here, not through policy targets or the matrix: a backend on this
+        # rule would proxy a foreign-Origin upgrade with the user's session cookie.
+        if route_name != 'netbootxyz' or set(rule) != {'name', 'matches'}:
+            problems.append(f'{where}: must have no backend and no filters (the gateway answers 500)')
+    else:
+        if rule.get('backendRefs') != BACKENDS.get(route_name):
+            problems.append(f'{where}: backend must be exactly {BACKENDS.get(route_name)}, '
+                            f'got {rule.get("backendRefs")}')
+        if any(not isinstance(f, dict) or f.get('type') != 'ResponseHeaderModifier'
+               for f in rule.get('filters', [])):
+            problems.append(f'{where}: backend rules may only set response headers')
+    return problems
+
+
+def route_problems(routes):
+    """Both routes, on the internal HTTPS listener and this hostname only, in the modelled shape."""
+    names = [route.get('metadata', {}).get('name') for route in routes]
+    problems = [] if sorted(map(str, names)) == sorted(BACKENDS) else [
+        f'HTTPRoutes must be exactly {sorted(BACKENDS)}, got {names}']
+    for name, route in zip(names, routes):
+        spec = route.get('spec') or {}
+        if spec.get('parentRefs') != PARENT or spec.get('hostnames') != [HOST]:
+            # A rule set on another host or listener would not combine with the
+            # other route's rules the way the matrix assumes.
+            problems.append(f'{name}: must attach only to {PARENT} for {HOST}, got '
+                            f'{spec.get("parentRefs")} {spec.get("hostnames")}')
+        if set(spec) - ROUTE_FIELDS:
+            problems.append(f'{name}: unsupported route fields {sorted(set(spec) - ROUTE_FIELDS)}')
+        rules = spec.get('rules')
+        if not isinstance(rules, list) or not rules:
+            problems.append(f'{name}: needs rules')
+            continue
+        rule_names = [rule.get('name') if isinstance(rule, dict) else None for rule in rules]
+        if None in rule_names or len(set(rule_names)) != len(rule_names):
+            problems.append(f'{name}: every rule needs a unique name')
+        if rule_names.count(DENY) != 1 or rule_names[0] != DENY:
+            problems.append(f'{name}: {DENY} must be the first rule')
+        for rule in rules:
+            problems += rule_problems(name, rule)
+    return problems
+
+
+def auth_policy_problems(docs, backend_rules):
+    """One SecurityPolicy: Authentik ext_authz, fail-closed, on exactly the UI rules with a backend."""
+    policies = [d for d in docs if d['kind'] == 'SecurityPolicy']
+    if len(policies) != 1:
+        return [f'exactly one SecurityPolicy must own forward auth, found {len(policies)}']
+    spec, problems = policies[0].get('spec') or {}, []
+    if set(spec) != {'targetRefs', 'extAuth'}:
+        problems.append(f'the SecurityPolicy must set only targetRefs and extAuth, got {sorted(spec)}')
+    refs = spec.get('targetRefs') if isinstance(spec.get('targetRefs'), list) else []
+    if any(not isinstance(ref, dict) or 'sectionName' not in ref
+           or {k: v for k, v in ref.items() if k != 'sectionName'} != TARGET for ref in refs):
+        # A whole-route target would run forward auth ahead of the 403 rule.
+        problems.append('forward auth must target UI rules by sectionName only')
+    sections = [ref.get('sectionName') for ref in refs if isinstance(ref, dict)]
+    if (None in backend_rules or set(sections) != set(backend_rules)
+            or len(set(sections)) != len(sections) or len(sections) != len(backend_rules)):
+        problems.append(f'forward auth targets {sections}, rules with a backend are {backend_rules}')
+    ext = spec.get('extAuth') if isinstance(spec.get('extAuth'), dict) else {}
+    http = ext.get('http') if isinstance(ext.get('http'), dict) else {}
+    if 'grpc' in ext or http.get('backendRefs') != AUTHENTIK or http.get('path') != CHECK_PATH:
+        # A target without this would attach a policy that authenticates nothing.
+        problems.append(f'extAuth must call {AUTHENTIK} at {CHECK_PATH}')
+    if ext.get('failOpen', False) is not False:
+        problems.append('extAuth must fail closed (failOpen false or omitted)')
+    return problems
 
 
 def precedence(route_match):
@@ -92,10 +205,9 @@ def precedence(route_match):
 
 
 def matches_request(route_match, path, headers):
+    """route_problems() has already limited matches to PathPrefix plus headers."""
     want = route_match.get('path', {'type': 'PathPrefix', 'value': '/'})
     prefix, bare = want['value'], path.split('?')[0]
-    if want.get('type', 'PathPrefix') != 'PathPrefix':
-        raise AssertionError(f'precedence model only covers PathPrefix: {want}')
     if not (prefix == '/' or bare == prefix.rstrip('/') or bare.startswith(prefix.rstrip('/') + '/')):
         return False
     for header in route_match.get('headers', []):
@@ -135,50 +247,47 @@ def expected_rule(path, headers):
     return ('netbootxyz', 'editor')
 
 
-REQUESTS = [(path, {k: v for k, v in (('Origin', origin), ('Upgrade', upgrade),
-                                      ('Authorization', auth)) if v})
+HEADERS = [{k: v for k, v in (('Origin', origin), ('Upgrade', upgrade), ('Authorization', auth)) if v}
+           for origin in (None, f'https://{HOST}', 'https://evil.homelab0.org')
+           for upgrade in (None, 'websocket', 'WebSocket')
+           for auth in (None, 'Basic YWRtaW46eA==', 'Bearer x', 'bearer x', 'x')]
+REQUESTS = [(path, headers)
             for path in ('/', '/menus', '/socket.io/?EIO=4&transport=polling',
                          '/socket.io/?EIO=4&transport=websocket', '/socket.io',
                          '/outpost.goauthentik.io/auth/envoy', '/outpost.goauthentik.io/callback')
-            for origin in (None, f'https://{HOST}', 'https://evil.homelab0.org')
-            for upgrade in (None, 'websocket', 'WebSocket')
-            for auth in (None, 'Basic YWRtaW46eA==', 'Bearer x', 'bearer x', 'x')]
+            for headers in HEADERS]
+
+
+def requests(routes):
+    """REQUESTS plus every backend match prefix, so a newly added backend path is exercised too."""
+    known = {path for path, _ in REQUESTS}
+    prefixes = sorted({m['path']['value'] for route in routes for rule in route['spec']['rules']
+                       if rule.get('backendRefs') for m in rule['matches']} - known)
+    return REQUESTS + [(path, headers) for path in prefixes for headers in HEADERS]
 
 
 def authorization_problems(docs):
-    """Requests carrying Authorization get the 403 rule; forward auth covers every backend rule."""
-    problems = []
+    """Requests carrying Authorization get the 403 rule; forward auth covers every backend rule.
+
+    Shape problems are reported instead of running the matrix, so an extra,
+    missing or malformed route or rule shows up as a finding, not an exception.
+    """
     routes = [d for d in docs if d['kind'] == 'HTTPRoute']
-    for path, headers in REQUESTS:
-        got, want = selected_rule(routes, path, headers), expected_rule(path, headers)
-        if got != want:
-            problems.append(f'{path} {sorted(headers)} goes to {got}, expected {want}')
-    for route in routes:
-        rules = route['spec']['rules']
-        names = [rule.get('name') for rule in rules]
-        if None in names or len(set(names)) != len(names):
-            problems.append(f'{route["metadata"]["name"]}: every rule needs a unique name')
-        deny = [rule for rule in rules if rule.get('name') == DENY]
-        if len(deny) != 1 or rules[:1] != deny:
-            problems.append(f'{route["metadata"]["name"]}: {DENY} must be the first rule')
-        for rule in deny:
-            if rule.get('backendRefs') or rule.get('filters') != DENY_FILTER:
-                problems.append(f'{route["metadata"]["name"]}: {DENY} must only return the 403 filter')
+    problems = route_problems(routes)
+    if not problems:
+        for path, headers in requests(routes):
+            got, want = selected_rule(routes, path, headers), expected_rule(path, headers)
+            if got != want:
+                problems.append(f'{path} {sorted(headers)} goes to {got}, expected {want}')
     filters = [d for d in docs if d['kind'] == 'HTTPRouteFilter']
     if [(f['metadata']['name'], f['spec'].get('directResponse', {}).get('statusCode')) for f in filters] \
             != [('netbootxyz-deny-authorization', 403)]:
         problems.append('the deny filter must be a 403 direct response')
-    ui = next((r for r in routes if r['metadata']['name'] == 'netbootxyz'), {'spec': {'rules': []}})
-    backend_rules = [rule.get('name') for rule in ui['spec']['rules'] if rule.get('backendRefs')]
-    targets = [ref for d in docs if d['kind'] == 'SecurityPolicy' for ref in d['spec']['targetRefs']]
-    if any(ref.get('name') != 'netbootxyz' or 'sectionName' not in ref for ref in targets):
-        # A whole-route target would run forward auth ahead of the 403 rule.
-        problems.append('forward auth must target UI rules by sectionName only')
-    sections = [ref.get('sectionName') for ref in targets]
-    if (None in backend_rules or set(sections) != set(backend_rules)
-            or len(set(sections)) != len(sections) or len(sections) != len(backend_rules)):
-        problems.append(f'forward auth targets {sections}, rules with a backend are {backend_rules}')
-    return problems
+    ui = next((r for r in routes if r.get('metadata', {}).get('name') == 'netbootxyz'), {})
+    rules = (ui.get('spec') or {}).get('rules')
+    backend_rules = [rule.get('name') for rule in (rules if isinstance(rules, list) else [])
+                     if isinstance(rule, dict) and rule.get('backendRefs')]
+    return problems + auth_policy_problems(docs, backend_rules)
 
 
 def topf_talos_version():
@@ -310,6 +419,96 @@ class ManifestContract(unittest.TestCase):
                 docs = copy.deepcopy(self.docs)
                 change(docs)
                 self.assertTrue(authorization_problems(docs))
+
+    def test_route_and_policy_shape_weakening_is_reported(self):
+        """Each change below once left every check green; each must now fail for its own reason."""
+        def route(docs, name):
+            return next(d for d in docs if d['kind'] == 'HTTPRoute' and d['metadata']['name'] == name)
+
+        def ui(docs):
+            return route(docs, 'netbootxyz')['spec']['rules']
+
+        def policy(docs):
+            return next(d for d in docs if d['kind'] == 'SecurityPolicy')['spec']
+
+        def method_limited_deny(docs):  # a POST would skip the deny and reach forward auth
+            ui(docs)[0]['matches'][2]['method'] = 'GET'
+
+        def query_limited_deny(docs):
+            ui(docs)[0]['matches'][2]['queryParams'] = [{'type': 'Exact', 'name': 'a', 'value': 'b'}]
+
+        def outpost_on_other_host(docs):  # the callback would fall to the editor catch-all
+            route(docs, 'netbootxyz-outpost')['spec']['hostnames'] = ['other.homelab0.org']
+
+        def outpost_on_other_listener(docs):
+            route(docs, 'netbootxyz-outpost')['spec']['parentRefs'][0]['sectionName'] = 'http'
+
+        def editor_on_external_gateway(docs):
+            route(docs, 'netbootxyz')['spec']['parentRefs'][0]['name'] = 'envoy-external'
+
+        def targeted_api_rule(docs):  # targeted correctly, but outranks the / deny match
+            rule = copy.deepcopy(ui(docs)[-1])
+            rule['name'], rule['matches'] = 'api', [{'path': {'type': 'PathPrefix', 'value': '/api/'}}]
+            ui(docs).append(rule)
+            policy(docs)['targetRefs'].append({**policy(docs)['targetRefs'][-1], 'sectionName': 'api'})
+
+        def websocket_deny_proxies(docs):  # backend, nosniff and a target: all else stays green
+            rule = next(r for r in ui(docs) if r['name'] == 'websocket-deny')
+            rule['backendRefs'] = copy.deepcopy(ui(docs)[-1]['backendRefs'])
+            rule['filters'] = copy.deepcopy(ui(docs)[-1]['filters'])
+            policy(docs)['targetRefs'].append(
+                {**policy(docs)['targetRefs'][-1], 'sectionName': 'websocket-deny'})
+
+        def outpost_to_editor(docs):  # the outpost rule has no forward auth
+            route(docs, 'netbootxyz-outpost')['spec']['rules'][-1]['backendRefs'] = [
+                {'name': 'netbootxyz-admin', 'port': 3000}]
+
+        def ext_auth_removed(docs):
+            del policy(docs)['extAuth']
+
+        def ext_auth_other_path(docs):
+            policy(docs)['extAuth']['http']['path'] = '/'
+
+        def ext_auth_fail_open(docs):
+            policy(docs)['extAuth']['failOpen'] = True
+
+        def rule_without_matches(docs):  # no matches means every path
+            del ui(docs)[-1]['matches']
+
+        def outpost_route_missing(docs):
+            docs.remove(route(docs, 'netbootxyz-outpost'))
+
+        def extra_route(docs):
+            extra = copy.deepcopy(route(docs, 'netbootxyz'))
+            extra['metadata']['name'] = 'netbootxyz-extra'
+            docs.append(extra)
+
+        for change, reason in (
+                (method_limited_deny, "unsupported match fields ['method']"),
+                (query_limited_deny, "unsupported match fields ['queryParams']"),
+                (outpost_on_other_host, 'netbootxyz-outpost: must attach only'),
+                (outpost_on_other_listener, 'netbootxyz-outpost: must attach only'),
+                (editor_on_external_gateway, 'netbootxyz: must attach only'),
+                (targeted_api_rule, f"/api/ ['Authorization'] goes to ('netbootxyz', 'api'), "
+                                    f"expected ('netbootxyz', '{DENY}')"),
+                (websocket_deny_proxies, 'netbootxyz/websocket-deny: must have no backend'),
+                (outpost_to_editor, 'netbootxyz-outpost/outpost: backend must be exactly'),
+                (ext_auth_removed, 'extAuth must call'),
+                (ext_auth_other_path, 'extAuth must call'),
+                (ext_auth_fail_open, 'extAuth must fail closed'),
+                (rule_without_matches, 'netbootxyz/editor: needs explicit matches'),
+                (outpost_route_missing, 'HTTPRoutes must be exactly'),
+                (extra_route, 'HTTPRoutes must be exactly')):
+            with self.subTest(change=change.__name__):
+                docs = copy.deepcopy(self.docs)
+                change(docs)
+                problems = authorization_problems(docs)
+                self.assertTrue(any(reason in p for p in problems), problems)
+
+    def test_fail_closed_default_is_accepted(self):
+        docs = copy.deepcopy(self.docs)
+        del next(d for d in docs if d['kind'] == 'SecurityPolicy')['spec']['extAuth']['failOpen']
+        self.assertEqual(authorization_problems(docs), [])
 
     def test_policy_admits_boot_ports_openly_and_editor_from_internal_gateway_only(self):
         policy = self.by_kind['CiliumNetworkPolicy'][0]['spec']
