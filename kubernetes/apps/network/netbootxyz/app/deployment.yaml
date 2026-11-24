@@ -7,7 +7,7 @@ metadata:
     # A menu or start-script change restarts the pod, which copies them in.
     reloader.stakater.com/auto: "true"
 spec:
-  # One writer for the RWO volume; Recreate frees it before the new pod starts.
+  # One writer for the RWO volumes; Recreate frees them before the new pod starts.
   replicas: 1
   revisionHistoryLimit: 2
   strategy:
@@ -131,10 +131,11 @@ spec:
         - name: config
           persistentVolumeClaim:
             claimName: netbootxyz-config
-        # Local asset mirror is not used; Talos comes from the Image Factory.
+        # Installer images downloaded from the management UI; nginx serves them
+        # on the boot port. Talos still comes from the Image Factory.
         - name: assets
-          emptyDir:
-            sizeLimit: 1Gi
+          persistentVolumeClaim:
+            claimName: netbootxyz-assets
         - name: netboot
           configMap:
             name: netbootxyz

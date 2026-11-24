@@ -63,9 +63,13 @@ data:
     if pe "${remote}/secureboot-x86_64/shimx64.efi"; then
       printf '%s' "${IPXE_SB_VERSION}" > /config/ipxe-sb-version.txt
     fi
+    # Read-only (0444) for the web app: it runs as nbxyz without DAC_OVERRIDE
+    # and saves by opening the served file for writing, so a UI save of these
+    # Git-managed files fails instead of making ready.sh fail. Still owned by
+    # nbxyz, because dnsmasq --tftp-secure serves only files its user owns.
     install -d -o nbxyz -g nbxyz "${menus}/custom" \
-      && install -m 0644 -o nbxyz -g nbxyz /netboot/custom.ipxe "${menus}/custom/custom.ipxe" \
-      && install -m 0644 -o nbxyz -g nbxyz /netboot/local-vars.ipxe "${menus}/local-vars.ipxe" \
+      && install -m 0444 -o nbxyz -g nbxyz /netboot/custom.ipxe "${menus}/custom/custom.ipxe" \
+      && install -m 0444 -o nbxyz -g nbxyz /netboot/local-vars.ipxe "${menus}/local-vars.ipxe" \
       || exit 1
 
     echo "[netboot] starting supervisord (programs run as nbxyz)"
