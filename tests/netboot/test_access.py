@@ -25,15 +25,26 @@ ADMINS = {'tag': 'Find', 'value': ['authentik_core.group', ['name', 'authentik A
 EXCLUSION = {'tag': 'KeyOf', 'value': 'policy-deny-ungranted-ai-browser-test'}
 APP_REF = {'tag': 'Find', 'value': ['authentik_core.application', ['slug', 'netbootxyz']]}
 SOCKET_IO = {'type': 'PathPrefix', 'value': '/socket.io/'}
-# UI route rules, in order: Socket.IO from the management origin, then any
-# other WebSocket upgrade on /socket.io/ (no backend: gateway 500), then
-# every remaining path. The first two tie on precedence, so order matters.
+ROOT_PATH = {'type': 'PathPrefix', 'value': '/'}
+OUTPOST_PATH = {'type': 'PathPrefix', 'value': '/outpost.goauthentik.io/'}
+ORIGIN = {'name': 'Origin', 'type': 'Exact', 'value': f'https://{HOST}'}
+AUTHZ = {'name': 'Authorization', 'type': 'RegularExpression', 'value': '.+'}
+DENY_FILTER = [{'type': 'ExtensionRef', 'extensionRef': {
+    'group': 'gateway.envoyproxy.io', 'kind': 'HTTPRouteFilter', 'name': 'netbootxyz-deny-authorization'}}]
+# UI route rules, in order: any request with Authorization (403 filter, no
+# forward auth), Socket.IO from the management origin, any other WebSocket
+# upgrade on /socket.io/ (no backend: gateway 500), then every remaining path.
+# Request-level precedence is covered by test_manifests.py.
+UI_RULE_NAMES = ['deny-authorization', 'socket-io', 'websocket-deny', 'editor']
 UI_MATCHES = [
-    [{'path': SOCKET_IO, 'headers': [{'name': 'Origin', 'type': 'Exact', 'value': f'https://{HOST}'}]}],
+    [{'path': SOCKET_IO, 'headers': [AUTHZ, ORIGIN]}, {'path': SOCKET_IO, 'headers': [AUTHZ]},
+     {'path': ROOT_PATH, 'headers': [AUTHZ]}],
+    [{'path': SOCKET_IO, 'headers': [ORIGIN]}],
     [{'path': SOCKET_IO, 'headers': [{'name': 'Upgrade', 'type': 'RegularExpression',
                                       'value': '(?i)websocket'}]}],
-    [{'path': {'type': 'PathPrefix', 'value': '/'}}],
+    [{'path': ROOT_PATH}],
 ]
+AUTH_SECTIONS = ['socket-io', 'editor']
 
 
 class BlueprintLoader(yaml.SafeLoader):
@@ -106,10 +117,20 @@ def check(f):
         require(route['metadata'].get('namespace', 'network') == 'network', f'{name} must stay in network')
     ui_rules = routes.get(ROUTE, {}).get('spec', {}).get('rules', [])
     require([rule.get('matches') for rule in ui_rules] == UI_MATCHES,
-            'the UI route must be: Origin-checked /socket.io/, then the WebSocket deny, then /')
+            'the UI route must be: Authorization deny, Origin-checked /socket.io/, '
+            'then the WebSocket deny, then /')
+    require([rule.get('name') for rule in ui_rules] == UI_RULE_NAMES,
+            'UI rules must keep their names; forward auth targets them by name')
     backendless = [rule for rule in ui_rules if not rule.get('backendRefs')]
-    require(backendless == [{'matches': UI_MATCHES[1]}],
-            'only the WebSocket deny may lack a backend, and it must have no filter')
+    require(backendless == [
+        {'name': UI_RULE_NAMES[0], 'matches': UI_MATCHES[0], 'filters': DENY_FILTER},
+        {'name': UI_RULE_NAMES[2], 'matches': UI_MATCHES[2]}],
+        'only the Authorization deny (403 filter) and the WebSocket deny (no filter) may lack a backend')
+    require([(d['metadata']['name'], d['spec']) for d in by_kind.get('HTTPRouteFilter', [])] == [
+        ('netbootxyz-deny-authorization', {'directResponse': {
+            'statusCode': 403, 'contentType': 'text/plain', 'body': {'type': 'Inline', 'inline':
+                'Authorization headers are not accepted here. Sign in through Authentik.\n'}}})],
+        'the only route filter is the fixed 403 for Authorization')
     require(all(rule['backendRefs'] == EDITOR_BACKEND for rule in ui_rules if rule.get('backendRefs')),
             'the UI route must reach only the admin service')
     # nosniff is load-bearing: the JSONP polling form (?j=) is text/plain and
@@ -125,10 +146,11 @@ def check(f):
             .get('external-dns.alpha.kubernetes.io/hostname') == HOST,
             'internal DNS must publish the management hostname')
     outpost_rules = routes.get(OUTPOST_ROUTE, {}).get('spec', {}).get('rules', [])
-    require(outpost_rules == [{
-        'matches': [{'path': {'type': 'PathPrefix', 'value': '/outpost.goauthentik.io/'}}],
-        'backendRefs': AUTHENTIK_BACKEND}],
-        'the callback route must match the outpost prefix and reach only Authentik')
+    require(outpost_rules == [
+        {'name': 'deny-authorization', 'matches': [{'path': OUTPOST_PATH, 'headers': [AUTHZ]}],
+         'filters': DENY_FILTER},
+        {'name': 'outpost', 'matches': [{'path': OUTPOST_PATH}], 'backendRefs': AUTHENTIK_BACKEND}],
+        'the callback route must refuse Authorization, match the outpost prefix and reach only Authentik')
     for name, route in routes.items():
         for rule in route['spec'].get('rules', []):
             for ref in rule.get('backendRefs', []):
@@ -139,9 +161,10 @@ def check(f):
     require(len(policies) == 1, 'exactly one SecurityPolicy')
     for policy in policies:
         spec = policy['spec']
-        require(spec.get('targetRefs') == [{'group': 'gateway.networking.k8s.io',
-                                            'kind': 'HTTPRoute', 'name': ROUTE}],
-                'forward auth must target exactly the UI route')
+        require(spec.get('targetRefs') == [{'group': 'gateway.networking.k8s.io', 'kind': 'HTTPRoute',
+                                            'name': ROUTE, 'sectionName': section}
+                                           for section in AUTH_SECTIONS],
+                'forward auth must target exactly the UI rules with a backend, by name')
         ext = spec.get('extAuth', {})
         require(ext.get('failOpen') is False, 'forward auth must fail closed')
         require(ext.get('http', {}).get('backendRefs') == AUTHENTIK_BACKEND,
@@ -180,7 +203,7 @@ def check(f):
                 'provider must forward-auth the management hostname')
         require('skip_path_regex' not in attrs, 'no unauthenticated paths on the editor')
         require(attrs.get('intercept_header_auth') is False,
-                'browser-only editor: app passwords and tokens must not authenticate')
+                'header auth off; Authorization is also refused at the route')
         require(attrs.get('authorization_flow') == {'tag': 'Context', 'value': 'authorization_flow'},
                 'provider must use the shared authorization flow')
     outposts = [e for e in f['blueprints']['outposts.yaml'] if e.get('id') == 'outpost-embedded']
@@ -312,11 +335,11 @@ class AccessContract(unittest.TestCase):
             self.doc(f, 'HTTPRoute', ROUTE)['spec']['parentRefs'][0]['name'] = 'envoy-external'
 
         def outpost_to_editor(f):
-            self.doc(f, 'HTTPRoute', OUTPOST_ROUTE)['spec']['rules'][0]['backendRefs'] = [
+            self.doc(f, 'HTTPRoute', OUTPOST_ROUTE)['spec']['rules'][-1]['backendRefs'] = [
                 {'name': 'netbootxyz-admin', 'port': 3000}]
 
         def broad_callback(f):
-            self.doc(f, 'HTTPRoute', OUTPOST_ROUTE)['spec']['rules'][0]['matches'][0]['path']['value'] = '/'
+            self.doc(f, 'HTTPRoute', OUTPOST_ROUTE)['spec']['rules'][-1]['matches'][0]['path']['value'] = '/'
 
         def extra_ui_rule(f):
             rules = self.ui_rules(f)
@@ -331,22 +354,23 @@ class AccessContract(unittest.TestCase):
                 self.assertTrue(self.mutated(change))
 
     def test_cross_site_websocket_guard_is_required(self):
+        # Indexes: 0 Authorization deny, 1 socket-io, 2 websocket-deny, 3 editor.
         def deny_removed(f):
-            del self.ui_rules(f)[1]
+            del self.ui_rules(f)[2]
 
         def origin_widened(f):
-            self.ui_rules(f)[0]['matches'][0]['headers'][0] = {
+            self.ui_rules(f)[1]['matches'][0]['headers'][0] = {
                 'name': 'Origin', 'type': 'RegularExpression', 'value': '.*homelab0.org'}
 
         def allow_after_deny(f):
             rules = self.ui_rules(f)
-            rules[0], rules[1] = rules[1], rules[0]
+            rules[1], rules[2] = rules[2], rules[1]
 
         def deny_given_backend(f):
-            self.ui_rules(f)[1]['backendRefs'] = copy.deepcopy(EDITOR_BACKEND)
+            self.ui_rules(f)[2]['backendRefs'] = copy.deepcopy(EDITOR_BACKEND)
 
         def deny_redirected(f):
-            self.ui_rules(f)[1]['filters'] = [{'type': 'RequestRedirect',
+            self.ui_rules(f)[2]['filters'] = [{'type': 'RequestRedirect',
                                                'requestRedirect': {'hostname': 'example.org'}}]
 
         def root_nosniff_removed(f):
@@ -368,6 +392,26 @@ class AccessContract(unittest.TestCase):
         def target_outpost(f):
             self.doc(f, 'SecurityPolicy')['spec']['targetRefs'][0]['name'] = OUTPOST_ROUTE
 
+        def whole_route(f):
+            self.doc(f, 'SecurityPolicy')['spec']['targetRefs'] = [
+                {'group': 'gateway.networking.k8s.io', 'kind': 'HTTPRoute', 'name': ROUTE}]
+
+        def deny_targeted(f):
+            refs = self.doc(f, 'SecurityPolicy')['spec']['targetRefs']
+            refs.append({**refs[0], 'sectionName': 'deny-authorization'})
+
+        def editor_untargeted(f):
+            self.doc(f, 'SecurityPolicy')['spec']['targetRefs'].pop()
+
+        def ui_authorization_deny_removed(f):
+            del self.ui_rules(f)[0]
+
+        def outpost_authorization_deny_removed(f):
+            del self.doc(f, 'HTTPRoute', OUTPOST_ROUTE)['spec']['rules'][0]
+
+        def deny_filter_allows(f):
+            self.doc(f, 'HTTPRouteFilter')['spec']['directResponse']['statusCode'] = 200
+
         def no_policy(f):
             f['docs'] = [d for d in f['docs'] if d['kind'] != 'SecurityPolicy']
 
@@ -383,8 +427,10 @@ class AccessContract(unittest.TestCase):
         def traffic_policy_adds_settings(f):
             self.doc(f, 'BackendTrafficPolicy')['spec']['rateLimit'] = {'type': 'Local'}
 
-        for change in (fail_open, omit_fail_open, target_outpost, no_policy, wide_grant,
-                       unregistered_grant, traffic_policy_replaces_gateway,
+        for change in (fail_open, omit_fail_open, target_outpost, whole_route, deny_targeted,
+                       editor_untargeted, ui_authorization_deny_removed,
+                       outpost_authorization_deny_removed, deny_filter_allows, no_policy,
+                       wide_grant, unregistered_grant, traffic_policy_replaces_gateway,
                        traffic_policy_adds_settings):
             with self.subTest(change=change.__name__):
                 self.assertTrue(self.mutated(change))
@@ -516,7 +562,8 @@ class AccessContract(unittest.TestCase):
     def test_management_behaviour_is_documented(self):
         readme = (APP / 'README.md').read_text()
         for term in (HOST, 'authentik Admins', '/config/menus/local', 'custom/custom.ipxe',
-                     'netbootxyz-assets', '10.20.67.28', 'Origin', '0444'):
+                     'netbootxyz-assets', '10.20.67.28', 'Origin', '0444', 'Authorization',
+                     'deny-authorization'):
             self.assertIn(term, readme)
 
 
