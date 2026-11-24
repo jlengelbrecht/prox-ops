@@ -266,7 +266,7 @@ def check(f):
     require(card.get('namespace') == 'network' and card.get('app') == 'netbootxyz',
             'card must read pod status from the Kubernetes API')
     require(card.get('podSelector') == 'app.kubernetes.io/name=netbootxyz', 'card must select the pod')
-    require(not {'widget', 'siteMonitor', 'ping'} & set(card), 'card must not call the editor')
+    require(not {'widget', 'widgets', 'siteMonitor', 'ping'} & set(card), 'card must not call the editor')
     require('netbootxyz-admin' not in f['homepage_text'] and ':3000' not in repr(card),
             'Homepage must never reach the admin port')
     for role in f['rbac']:
@@ -474,6 +474,10 @@ class AccessContract(unittest.TestCase):
             next(c for c in network(f) if 'netboot.xyz' in c)['netboot.xyz']['widget'] = {
                 'type': 'customapi', 'url': 'http://netbootxyz-admin.network.svc.cluster.local:3000'}
 
+        def editor_widgets(f):
+            next(c for c in network(f) if 'netboot.xyz' in c)['netboot.xyz']['widgets'] = [
+                {'type': 'customapi', 'url': f'https://{HOST}'}]
+
         def card_moved(f):
             card = take_card(f)
             other = next(s for s in f['services'] if 'Network' not in s)
@@ -490,7 +494,8 @@ class AccessContract(unittest.TestCase):
         def wider_rbac(f):
             f['rbac'][1]['rules'].append({'apiGroups': [''], 'resources': ['secrets'], 'verbs': ['get']})
 
-        for change in (discovery_on, editor_widget, card_moved, card_duplicated, card_lost, wider_rbac):
+        for change in (discovery_on, editor_widget, editor_widgets, card_moved, card_duplicated,
+                       card_lost, wider_rbac):
             with self.subTest(change=change.__name__):
                 self.assertTrue(self.mutated(change))
 
