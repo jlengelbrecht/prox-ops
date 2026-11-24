@@ -1,0 +1,127 @@
+---
+# Start scripts and the declarative boot menu. No secrets: the Talos entry
+# boots the public Image Factory image and carries no machine config.
+# Substitution is off so Flux leaves the iPXE and shell variables alone.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbootxyz
+  annotations:
+    kustomize.toolkit.fluxcd.io/substitute: disabled
+data:
+  lib.sh: |
+    # Checks shared by entrypoint.sh and ready.sh. They catch saved error pages
+    # and truncated downloads (completeness), not tampering (authenticity).
+    # u FILE OFFSET BYTES: little-endian unsigned integer, 0 past the end.
+    u() { local v; v=$(od -An -tu"$3" -j"$2" -N"$3" "$1" 2>/dev/null | tr -d ' \n'); echo "${v:-0}"; }
+    # pe FILE: a PE image whose every section's data lies inside the file.
+    pe() {
+      local f=$1 size off n table i end max=0
+      [[ "$(head -c2 "$f" 2>/dev/null)" == MZ ]] || return 1
+      size=$(stat -c %s "$f") off=$(u "$f" 60 4)
+      [[ "$(u "$f" "$off" 4)" == 17744 ]] || return 1  # "PE\0\0"
+      n=$(u "$f" $((off + 6)) 2) table=$((off + 24 + $(u "$f" $((off + 20)) 2)))
+      ((n > 0 && table + 40 * n <= size)) || return 1  # whole section table present
+      for ((i = 0; i < n; i++)); do
+        end=$(($(u "$f" $((table + 40 * i + 20)) 4) + $(u "$f" $((table + 40 * i + 16)) 4)))
+        ((end > max)) && max=$end
+      done
+      ((max <= size))
+    }
+    ipxe() { [[ "$(head -c6 "$1" 2>/dev/null)" == '#!ipxe' ]]; }
+    # release DIR: the parts of a netboot.xyz release that UEFI clients load.
+    release() { ipxe "$1/menu.ipxe" && ipxe "$1/boot.cfg" && pe "$1/netboot.xyz.efi"; }
+  entrypoint.sh: |
+    #!/bin/bash
+    # The image's /start.sh steps, as root: 1. drop the release unless remote/ and
+    # its served copy are the complete pinned version; 2. run upstream /init.sh with
+    # -e so a failed curl or tar stops it, then exit on any failure and let the
+    # restart retry; 3. copy our menus last, owned by nbxyz for dnsmasq --tftp-secure.
+    set -uo pipefail
+    shopt -s extglob nullglob
+    : "${MENU_VERSION:?MENU_VERSION must be pinned}"
+    : "${IPXE_SB_VERSION:?IPXE_SB_VERSION must be pinned}"
+    . /netboot/lib.sh
+
+    menus=/config/menus remote=/config/menus/remote
+    if [[ "$(cat /config/menuversion.txt 2>/dev/null)" != "${MENU_VERSION}" ]] || ! release "${remote}" || ! release "${menus}"; then
+      echo "[netboot] menus are not a complete ${MENU_VERSION} download; fetching again"
+      rm -rf "${menus}"/!(local|secureboot-*)
+    fi
+    if [[ "$(cat /config/ipxe-sb-version.txt 2>/dev/null)" != "${IPXE_SB_VERSION}" ]] \
+      || ! pe "${remote}/secureboot-x86_64/shimx64.efi"; then
+      echo "[netboot] Secure Boot files are not iPXE ${IPXE_SB_VERSION}; fetching again"
+      rm -rf "${remote}"/secureboot-* "${menus}"/secureboot-* /config/ipxe-sb-version.txt
+    fi
+
+    bash -e /init.sh || exit 1
+
+    if ! release "${remote}" || ! release "${menus}"; then
+      echo "[netboot] the ${MENU_VERSION} download is incomplete; exiting to retry" >&2
+      exit 1
+    fi
+    if pe "${remote}/secureboot-x86_64/shimx64.efi"; then
+      printf '%s' "${IPXE_SB_VERSION}" > /config/ipxe-sb-version.txt
+    fi
+    install -d -o nbxyz -g nbxyz "${menus}/custom" \
+      && install -m 0644 -o nbxyz -g nbxyz /netboot/custom.ipxe "${menus}/custom/custom.ipxe" \
+      && install -m 0644 -o nbxyz -g nbxyz /netboot/local-vars.ipxe "${menus}/local-vars.ipxe" \
+      || exit 1
+
+    echo "[netboot] starting supervisord (programs run as nbxyz)"
+    exec supervisord -c /etc/supervisor.conf
+  ready.sh: |
+    #!/bin/bash
+    # Ready only when the served files are the complete pinned release, our
+    # menu matches this ConfigMap, and nginx and dnsmasq are running.
+    set -u
+    . /netboot/lib.sh
+    [[ "$(cat /config/menuversion.txt 2>/dev/null)" == "${MENU_VERSION}" ]] || exit 1
+    release /config/menus || exit 1
+    cmp -s /netboot/custom.ipxe /config/menus/custom/custom.ipxe || exit 1
+    cmp -s /netboot/local-vars.ipxe /config/menus/local-vars.ipxe || exit 1
+    pgrep dnsmasq >/dev/null || exit 1
+    curl -fs -o /dev/null "http://127.0.0.1:${NGINX_PORT}/" || exit 1
+  local-vars.ipxe: |
+    #!ipxe
+    # Read by netboot.xyz before its main menu when booted over TFTP. Points the
+    # "Custom URL Menu" entry at custom/custom.ipxe on this server.
+    set custom_url tftp://${next-server}/custom
+  custom.ipxe: |
+    #!ipxe
+    # Homelab entries. Nothing here boots by default or on a timeout: Talos starts
+    # only when someone selects it. No machine config is passed and nothing
+    # installs automatically. A disk that already holds Talos can still load its
+    # own saved config; otherwise Talos waits in maintenance mode, whose API
+    # accepts a config from any host on the network (see the runbook).
+    #
+    # Schematic registered from amdgpu + amd-ucode extensions, net.ifnames=0.
+    # The version follows talos/topf.yaml; Renovate bumps both in one PR.
+    set talos_schematic 536b92328799fed89ad41d8ecb85ed3de23ab99ba7eded5ab6b6ef1197dc6b17
+    # renovate: datasource=github-releases depName=siderolabs/talos
+    set talos_version v1.14.5
+    set talos_url https://pxe.factory.talos.dev/pxe/${talos_schematic}/${talos_version}/metal-amd64
+
+    :menu
+    menu Homelab
+    item --gap Talos Linux
+    item talos-amd Talos ${talos_version} AMD (no machine config)
+    item --gap
+    item back Back to the netboot.xyz menu
+    choose --default back selected || goto back
+    goto ${selected}
+
+    :talos-amd
+    echo Talos ${talos_version} starts with no machine config and no automatic install.
+    echo A disk that already holds Talos may load its saved config.
+    echo Otherwise maintenance mode waits for a config from the network.
+    echo Loading ${talos_url}
+    chain --autofree ${talos_url} || goto failed
+
+    :failed
+    echo Could not load the Talos image.
+    prompt Press any key to return to the menu ||
+    goto menu
+
+    :back
+    exit

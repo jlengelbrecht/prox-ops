@@ -66,6 +66,35 @@
     },
     {
       "customType": "regex",
+      // The PXE menu's copy of the topf.yaml Talos version: same PR (groups.json5), same
+      // merge rules (autoMerge.json5); scripts/check-talos-versions.sh enforces it.
+      "description": "Monitor the Talos version in the netboot.xyz PXE menu",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/network/netbootxyz/app/configmap\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-releases depName=siderolabs/talos\\n\\s*set talos_version v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "siderolabs/talos",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The netboot.xyz container downloads these releases at start. Pinning them
+      // keeps it off "latest"; the start script fetches again when the pin moves.
+      "description": "Track the netboot.xyz menu and signed iPXE releases in the netbootxyz Deployment",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/network/netbootxyz/app/deployment\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-releases depName=(?<depName>netbootxyz/netboot\\.xyz|ipxe/ipxe)\\n\\s*- name: [A-Z_]+\\n\\s*value: \"(?<currentValue>v?\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Monitor Talos version in Terraform variables and tfvars",
       "managerFilePatterns": ["/^terraform/variables\\.tf$/", "/^terraform/terraform\\.tfvars$/"],
       "matchStrings": [
@@ -365,6 +394,16 @@
     }
   ],
   "packageRules": [
+    {
+      // Tags are <webapp version>-nbxyz<build>. Default docker versioning reads the
+      // -nbxyz28 part as a compatibility suffix and would never offer -nbxyz29, so
+      // the build number is parsed here. The kubernetes manager keeps the digest pin.
+      "description": "netboot.xyz image: <webapp semver>-nbxyz<build> tags only",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/netbootxyz/netbootxyz"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-nbxyz(?<build>\\d+)$",
+      "pinDigests": true
+    },
     {
       "description": "The Spektr base OCIRepository is tracked by the custom regex manager above; the flux manager's digest-only copy would only raise a stray digest lookup",
       "matchManagers": ["flux"],

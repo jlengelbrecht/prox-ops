@@ -1,0 +1,42 @@
+---
+# LAN boot endpoint: TFTP and the asset web server only. Confirm nothing else on
+# the LAN holds 10.20.67.28 before Flux applies this. No network label, so the
+# default pool and L2 policy announce it; the existing L2 announcements need the
+# Cluster traffic policy, and single-port TFTP keeps every reply on UDP 69.
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbootxyz
+  annotations:
+    lbipam.cilium.io/ips: "10.20.67.28"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: netbootxyz
+  ports:
+    - name: tftp
+      port: 69
+      targetPort: tftp
+      protocol: UDP
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+# Menu editor. ClusterIP only, never on the load balancer, and networkpolicy.yaml
+# admits no traffic to it. Reach it through the pod's loopback:
+#   kubectl -n network port-forward svc/netbootxyz-admin 3000:3000
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbootxyz-admin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: netbootxyz
+  ports:
+    - name: admin
+      port: 3000
+      targetPort: admin
+      protocol: TCP
