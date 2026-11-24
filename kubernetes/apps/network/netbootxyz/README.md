@@ -35,6 +35,10 @@ does not depend on Authentik.
 - Break-glass access without Authentik, for cluster admins only:
   `kubectl -n network port-forward svc/netbootxyz-admin 3000:3000`.
 
+Homepage shows a netboot.xyz card in the Network section. It links to the
+protected hostname and reads pod state, CPU and memory from the Kubernetes
+API. Homepage never calls the editor; netboot.xyz has no Homepage widget.
+
 ## Menus: what is Git-managed and what the UI may change
 
 - Git-managed, restored on every start: `custom/custom.ipxe` (the Talos entry)
