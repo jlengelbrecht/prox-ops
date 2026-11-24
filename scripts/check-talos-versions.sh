@@ -24,6 +24,7 @@ tf_value() { echo "[[:space:]]*=[[:space:]]*\"${SEMVER}\"[[:space:]]*$"; }
 
 talosupgrade=kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml
 kubeupgrade=kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml
+pxemenu=kubernetes/apps/network/netbootxyz/app/configmap.yaml
 declare -A talos=(
   [talos/topf.yaml]="$(extract talos/topf.yaml "^talosVersion:$(yaml_value)")"
   [talos/talenv.yaml]="$(extract talos/talenv.yaml "^talosVersion:$(yaml_value)")"
@@ -31,6 +32,8 @@ declare -A talos=(
   [$talosupgrade]="$(sed -n '/depName=siderolabs\/talos/{n;p;q}' "$talosupgrade" | sed -nE "s/^[[:space:]]+version:$(yaml_value)/\1/p")"
   [terraform/variables.tf]="$(awk '/^variable "talos_version"/{f=1} f&&/^[[:space:]]*default[[:space:]]*=/{print; exit}' terraform/variables.tf | sed -nE "s/^[[:space:]]*default$(tf_value)/\1/p")"
   [terraform/terraform.tfvars]="$(extract terraform/terraform.tfvars "^talos_version$(tf_value)")"
+  # The PXE menu's Talos entry: the iPXE line right after its Renovate annotation.
+  [$pxemenu]="$(sed -n '/depName=siderolabs\/talos/{n;p;q}' "$pxemenu" | sed -nE "s/^[[:space:]]*set talos_version v${SEMVER}[[:space:]]*$/\1/p")"
 )
 declare -A kube=(
   [talos/topf.yaml]="$(extract talos/topf.yaml "^kubernetesVersion:$(yaml_value)")"

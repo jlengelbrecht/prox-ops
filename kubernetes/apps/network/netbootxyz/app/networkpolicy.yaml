@@ -1,0 +1,23 @@
+---
+# Ingress only to the boot ports, so no pod or LAN host reaches the
+# unauthenticated editor on 3000; kubectl port-forward uses the pod's loopback,
+# which policy does not filter. DSR keeps LAN client addresses (world). No
+# egress section: DNS and release downloads stay open.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: netbootxyz
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: netbootxyz
+  ingress:
+    - fromEntities:
+        - world
+        - cluster
+      toPorts:
+        - ports:
+            - port: "69"
+              protocol: UDP
+            - port: "80"
+              protocol: TCP

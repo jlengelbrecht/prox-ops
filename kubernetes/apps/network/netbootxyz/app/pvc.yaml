@@ -1,0 +1,17 @@
+---
+# Menus, loaders and web-app settings: nothing secret, all downloadable again, but
+# a restart then serves them without the internet. Retain class plus prune
+# disabled: removing the app from Git must not delete the volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbootxyz-config
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block-retain
+  resources:
+    requests:
+      storage: 2Gi
