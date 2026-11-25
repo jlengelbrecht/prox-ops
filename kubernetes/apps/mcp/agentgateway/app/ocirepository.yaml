@@ -1,0 +1,14 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: agentgateway
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: v1.7.0
+    digest: sha256:f8e74f989c6705e3e1aaaaabacf554d594e2a24867eb4097b216e019a88c14a6
+  url: oci://cr.agentgateway.dev/charts/agentgateway-standalone

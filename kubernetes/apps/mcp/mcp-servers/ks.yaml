@@ -1,8 +1,8 @@
 ---
 # yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/kustomize.toolkit.fluxcd.io/kustomization_v1.json
 # MCP servers run as plain Deployments on their own Streamable HTTP transport,
-# each behind a bearer token. No MCP runtime or gateway sits in front of them;
-# LiteLLM's MCP gateway calls n8n directly until Spektr takes MCP over.
+# each behind a bearer token. Agentgateway and the legacy LiteLLM route
+# share n8n during the MCP migration.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

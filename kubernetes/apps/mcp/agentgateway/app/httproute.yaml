@@ -1,0 +1,30 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-mcp
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: mcp.homelab0.org
+spec:
+  parentRefs:
+    - {name: envoy-internal, namespace: network, sectionName: https}
+  hostnames: [mcp.homelab0.org]
+  rules:
+    - matches:
+        - path: {type: Exact, value: /mcp}
+      backendRefs:
+        - {name: agentgateway, port: 4000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-ui
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: agentgateway.homelab0.org
+spec:
+  parentRefs:
+    - {name: envoy-internal, namespace: network, sectionName: https}
+  hostnames: [agentgateway.homelab0.org]
+  rules:
+    - backendRefs:
+        - {name: agentgateway, port: 4001}

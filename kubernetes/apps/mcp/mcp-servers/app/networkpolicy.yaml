@@ -1,5 +1,5 @@
 ---
-# n8n-mcp: only LiteLLM may call it; it may reach DNS and the n8n API.
+# n8n-mcp: LiteLLM and agentgateway may call it; it may reach DNS and the n8n API.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -13,6 +13,8 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
             app.kubernetes.io/name: litellm
+        - matchLabels:
+            app.kubernetes.io/name: agentgateway
       toPorts:
         - ports: [{port: "3000", protocol: TCP}]
   egress:

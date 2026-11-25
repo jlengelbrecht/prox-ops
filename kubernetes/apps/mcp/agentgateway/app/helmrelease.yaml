@@ -1,0 +1,126 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway
+spec:
+  interval: 30m
+  releaseName: agentgateway
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 2
+  values:
+    nameOverride: agentgateway
+    mode: readonly
+    serviceAccount:
+      create: false
+      name: agentgateway
+    podAnnotations:
+      secret.reloader.stakater.com/reload: agentgateway-secrets,agentgateway-upstreams
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ALL]
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {memory: 512Mi}
+    gateway:
+      service:
+        type: ClusterIP
+        ports:
+          - {name: mcp, port: 4000, targetPort: 4000}
+          - {name: ui, port: 4001, targetPort: 4001}
+    session:
+      secretName: agentgateway-secrets
+    extraVolumes:
+      - name: ui-auth
+        secret:
+          secretName: agentgateway-secrets
+          items:
+            - {key: UI_HTPASSWD, path: htpasswd}
+    extraVolumeMounts:
+      - {name: ui-auth, mountPath: /run/agentgateway-auth, readOnly: true}
+    extraEnv:
+      - name: MCP_CLIENT_KEY
+        valueFrom:
+          secretKeyRef: {name: agentgateway-secrets, key: MCP_CLIENT_KEY}
+      - name: LANGFUSE_AUTH_HEADER
+        valueFrom:
+          secretKeyRef: {name: agentgateway-secrets, key: LANGFUSE_AUTH_HEADER}
+      - name: N8N_MCP_TOKEN
+        valueFrom:
+          secretKeyRef: {name: agentgateway-upstreams, key: N8N_MCP_TOKEN}
+      - name: OPEN_CONNECTOR_RUNTIME_TOKEN
+        valueFrom:
+          secretKeyRef: {name: agentgateway-upstreams, key: OPEN_CONNECTOR_RUNTIME_TOKEN}
+      - name: OTEL_SERVICE_NAME
+        value: agentgateway-mcp
+    config:
+      frontendPolicies:
+        tracing:
+          host: langfuse-web.ai.svc.cluster.local:3000
+          protocol: http
+          path: /api/public/otel/v1/traces
+          randomSampling: true
+          policies:
+            backendAuth:
+              credentials:
+                - key: "$LANGFUSE_AUTH_HEADER"
+                  location:
+                    header:
+                      name: authorization
+                      prefix: "Basic "
+      gateways:
+        tools:
+          port: 4000
+        console:
+          port: 4001
+      ui:
+        gateways: [console]
+        policies:
+          basicAuth:
+            mode: strict
+            realm: agentgateway admin
+            htpasswd:
+              file: /run/agentgateway-auth/htpasswd
+      mcp:
+        gateways: [tools]
+        prefixMode: always
+        policies:
+          apiKey:
+            mode: strict
+            keys:
+              - key: "$MCP_CLIENT_KEY"
+                metadata:
+                  id: mcp-pilot
+          mcpAuthorization:
+            rules:
+              - 'mcp.tool.target == "n8n" && mcp.tool.name in ["n8n_health_check", "n8n_list_workflows"]'
+              # The connector runtime separately allows only the approved action.
+              - 'mcp.tool.target == "connector" && mcp.tool.name == "execute_action"'
+        targets:
+          - name: n8n
+            mcp:
+              host: http://n8n-mcp.mcp.svc.cluster.local:3000/mcp
+            policies:
+              backendAuth:
+                key: "$N8N_MCP_TOKEN"
+          - name: connector
+            mcp:
+              host: http://open-connector.mcp.svc.cluster.local:3000/mcp
+            policies:
+              backendAuth:
+                key: "$OPEN_CONNECTOR_RUNTIME_TOKEN"
