@@ -1,0 +1,43 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: open-connector-dashboard
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: open-connector.homelab0.org
+spec:
+  parentRefs:
+    - {name: envoy-internal, namespace: network, sectionName: https}
+  hostnames: [open-connector.homelab0.org]
+  rules:
+    # Serve the bundled console and its management API only. MCP, the /v1
+    # runtime, and the connector's MCP OAuth server have no ingress match.
+    - matches:
+        - path: {type: Exact, value: /}
+        - path: {type: Exact, value: /overview}
+        - path: {type: Exact, value: /providers}
+        - path: {type: Exact, value: /oauth-apps}
+        - path: {type: Exact, value: /oauth-clients}
+        - path: {type: Exact, value: /actions}
+        - path: {type: Exact, value: /runs}
+        - path: {type: Exact, value: /access}
+        - path: {type: Exact, value: /resources}
+        - path: {type: Exact, value: /favicon.png}
+        - path: {type: PathPrefix, value: /assets}
+        - path: {type: PathPrefix, value: /api}
+        - path: {type: PathPrefix, value: /docs}
+        - path: {type: Exact, value: /openapi.json}
+        - path: {type: Exact, value: /oauth/callback}
+        - path: {type: Exact, value: /oauth/saas/complete}
+        - path: {type: Exact, value: /oauth2/callback}
+        - path: {type: Exact, value: /oauth2/logout}
+      backendRefs:
+        - {name: open-connector, port: 3000}
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - {name: Strict-Transport-Security, value: "max-age=31536000"}
+              - {name: X-Content-Type-Options, value: nosniff}
+              - {name: X-Frame-Options, value: DENY}
+              - {name: Referrer-Policy, value: no-referrer}

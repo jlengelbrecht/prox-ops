@@ -36,3 +36,16 @@ spec:
             app.kubernetes.io/component: web
       toPorts:
         - ports: [{port: "3000", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+    # The Authentik issuer, discovery, JWKS and token endpoint use this gateway.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}, {port: "10443", protocol: TCP}]

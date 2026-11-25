@@ -13,6 +13,13 @@ spec:
             app.kubernetes.io/name: agentgateway
       toPorts:
         - ports: [{port: "3000", protocol: TCP}]
+    # The internal Envoy listener serves the OIDC-protected dashboard paths.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports: [{port: "3000", protocol: TCP}]
   egress:
     - toEndpoints:
         - matchLabels:

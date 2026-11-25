@@ -26,5 +26,12 @@ spec:
     - {name: envoy-internal, namespace: network, sectionName: https}
   hostnames: [agentgateway.homelab0.org]
   rules:
-    - backendRefs:
+    # The UI enables LLMs on its own listener by default. Publish only the
+    # console paths so a UI edit cannot also publish an inference endpoint.
+    - matches:
+        - path: {type: Exact, value: /}
+        - path: {type: PathPrefix, value: /ui}
+        - path: {type: PathPrefix, value: /api}
+        - path: {type: Exact, value: /oauth/callback}
+      backendRefs:
         - {name: agentgateway, port: 4001}
