@@ -22,11 +22,14 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
-    # Allow the configuration job to call the public API.
+    # Allow the configuration job and MCP telemetry exporter to call the public API.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
             app.kubernetes.io/name: langfuse-config
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: agentgateway
       toPorts:
         - ports:
             - port: "3000"
