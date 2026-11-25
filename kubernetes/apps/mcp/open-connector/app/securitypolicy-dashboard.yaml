@@ -1,0 +1,26 @@
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: open-connector-dashboard
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: open-connector-dashboard}
+  csrf: {}
+  oidc:
+    provider:
+      issuer: https://authentik.homelab0.org/application/o/open-connector/
+      # Explicit endpoints avoid control-plane discovery against a private IP.
+      authorizationEndpoint: https://authentik.homelab0.org/application/o/authorize/
+      tokenEndpoint: https://authentik.homelab0.org/application/o/token/
+    clientID: open-connector-dashboard
+    clientSecret:
+      name: open-connector-dashboard-oidc
+    redirectURL: https://open-connector.homelab0.org/oauth2/callback
+    logoutPath: /oauth2/logout
+    scopes: [openid]
+    # Envoy preserves the app's existing admin Authorization header with
+    # forwarding disabled. The OIDC filter still requires its session cookie.
+    forwardAccessToken: false
+    passThroughAuthHeader: false
+    refreshToken: false

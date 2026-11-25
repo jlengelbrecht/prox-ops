@@ -192,6 +192,7 @@ spec:
       configMaps:
         - authentik-blueprints
         - authentik-agentgateway
+        - authentik-open-connector
 
     server:
       replicas: 1
@@ -221,13 +222,19 @@ spec:
     worker:
       replicas: 1
       deploymentAnnotations:
-        secret.reloader.stakater.com/reload: authentik-agentgateway
+        secret.reloader.stakater.com/reload: authentik-agentgateway,authentik-open-connector
       env:
         # Only blueprint reconciliation needs this secret.
         - name: AUTHENTIK_AGENTGATEWAY_CLIENT_SECRET
           valueFrom:
             secretKeyRef:
               name: authentik-agentgateway
+              key: OIDC_CLIENT_SECRET
+              optional: true
+        - name: AUTHENTIK_OPEN_CONNECTOR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-open-connector
               key: OIDC_CLIENT_SECRET
               optional: true
       podAnnotations:

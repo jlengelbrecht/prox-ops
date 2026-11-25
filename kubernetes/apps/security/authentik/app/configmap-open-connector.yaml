@@ -1,0 +1,60 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-open-connector
+  namespace: security
+data:
+  open-connector.yaml: |
+    version: 1
+    metadata:
+      name: Open Connector
+    entries:
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-open-connector
+        identifiers:
+          name: Open Connector
+        attrs:
+          name: Open Connector
+          client_id: open-connector-dashboard
+          client_secret: !Env AUTHENTIK_OPEN_CONNECTOR_CLIENT_SECRET
+          client_type: confidential
+          grant_types: [authorization_code]
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+          redirect_uris:
+            - matching_mode: strict
+              url: https://open-connector.homelab0.org/oauth2/callback
+          access_code_validity: minutes=1
+          access_token_validity: hours=1
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
+      - model: authentik_core.application
+        id: app-open-connector
+        identifiers:
+          slug: open-connector
+        attrs:
+          name: Open Connector
+          slug: open-connector
+          group: Tools
+          policy_engine_mode: all
+          meta_launch_url: https://open-connector.homelab0.org
+          provider: !KeyOf provider-open-connector
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf app-open-connector
+          order: 0
+        attrs:
+          group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          enabled: true
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf app-open-connector
+          order: 90
+        attrs:
+          policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
+          enabled: true
