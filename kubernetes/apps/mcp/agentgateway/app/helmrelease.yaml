@@ -15,14 +15,25 @@ spec:
   upgrade:
     remediation:
       retries: 2
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: agentgateway
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: agentgateway
+                annotations:
+                  secret.reloader.stakater.com/reload: agentgateway-secrets,agentgateway-upstreams
   values:
     nameOverride: agentgateway
     mode: readonly
     serviceAccount:
       create: false
       name: agentgateway
-    podAnnotations:
-      secret.reloader.stakater.com/reload: agentgateway-secrets,agentgateway-upstreams
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 1000
