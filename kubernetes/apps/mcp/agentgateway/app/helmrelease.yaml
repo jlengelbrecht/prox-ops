@@ -27,10 +27,17 @@ spec:
               metadata:
                 name: agentgateway
                 annotations:
-                  secret.reloader.stakater.com/reload: agentgateway-secrets,agentgateway-upstreams
+                  secret.reloader.stakater.com/reload: agentgateway-secrets,agentgateway-upstreams,agentgateway-platform
   values:
     nameOverride: agentgateway
-    mode: readonly
+    mode: database
+    database:
+      postgres:
+        # Expanded from the pod environment by agentgateway at runtime.
+        url: "postgresql://agentgateway:$POSTGRES_PASSWORD@postgres-rw.database.svc.cluster.local:5432/agentgateway?sslmode=require"
+    oidc:
+      enabled: true
+      cookieSecretName: agentgateway-platform
     serviceAccount:
       create: false
       name: agentgateway
@@ -56,15 +63,13 @@ spec:
           - {name: ui, port: 4001, targetPort: 4001}
     session:
       secretName: agentgateway-secrets
-    extraVolumes:
-      - name: ui-auth
-        secret:
-          secretName: agentgateway-secrets
-          items:
-            - {key: UI_HTPASSWD, path: htpasswd}
-    extraVolumeMounts:
-      - {name: ui-auth, mountPath: /run/agentgateway-auth, readOnly: true}
     extraEnv:
+      - name: POSTGRES_PASSWORD
+        valueFrom:
+          secretKeyRef: {name: agentgateway-platform, key: POSTGRES_PASSWORD}
+      - name: OIDC_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef: {name: agentgateway-platform, key: OIDC_CLIENT_SECRET}
       - name: MCP_CLIENT_KEY
         valueFrom:
           secretKeyRef: {name: agentgateway-secrets, key: MCP_CLIENT_KEY}
@@ -102,11 +107,14 @@ spec:
       ui:
         gateways: [console]
         policies:
-          basicAuth:
-            mode: strict
-            realm: agentgateway admin
-            htpasswd:
-              file: /run/agentgateway-auth/htpasswd
+          oidc:
+            issuer: https://authentik.homelab0.org/application/o/agentgateway/
+            clientId: agentgateway
+            clientSecret: "$OIDC_CLIENT_SECRET"
+            redirectURI: https://agentgateway.homelab0.org/oauth/callback
+            credentials: session
+            scopes: [profile, email]
+            sessionTtl: 1h
       mcp:
         gateways: [tools]
         prefixMode: always

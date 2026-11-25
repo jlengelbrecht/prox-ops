@@ -191,6 +191,7 @@ spec:
     blueprints:
       configMaps:
         - authentik-blueprints
+        - authentik-agentgateway
 
     server:
       replicas: 1
@@ -219,6 +220,16 @@ spec:
 
     worker:
       replicas: 1
+      deploymentAnnotations:
+        secret.reloader.stakater.com/reload: authentik-agentgateway
+      env:
+        # Only blueprint reconciliation needs this secret.
+        - name: AUTHENTIK_AGENTGATEWAY_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-agentgateway
+              key: OIDC_CLIENT_SECRET
+              optional: true
       podAnnotations:
         secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord,authentik-nyctr"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"

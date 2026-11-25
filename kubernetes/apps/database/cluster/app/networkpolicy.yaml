@@ -34,6 +34,14 @@ spec:
             - port: "5432"
               protocol: TCP
 
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: agentgateway
+            app.kubernetes.io/instance: agentgateway
+      toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+
     # From AI namespace (LiteLLM, Firecrawl, etc.)
     - fromEndpoints:
         - matchLabels:
