@@ -538,7 +538,7 @@
       ]
     },
     {
-      "description": "FULLY MANUAL: LiteLLM (migrations can be recorded as applied without creating the schema; verify with prisma migrate diff). Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
+      "description": "FULLY MANUAL: LiteLLM chart changes, Hermes schema changes and Hindsight database migrations",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchPackageNames": [
@@ -547,10 +547,25 @@
         "ghcr.io/vectorize-io/hindsight-api",
         "ghcr.io/vectorize-io/hindsight-control-plane",
         "ghcr.io/vectorize-io/charts/hindsight",
-        // LiteLLM: the v1.81 to v1.106 upgrade recorded 149 migrations as applied while 55 tables
-        // and many columns were missing, fixed by hand with `prisma migrate diff`; every bump needs that check.
         "/litellm/"
       ]
+    },
+    {
+      "description": "Track named stable LiteLLM images with an exact digest",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/berriai/litellm"],
+      "matchFileNames": ["kubernetes/apps/ai/litellm/app/helmrelease.yaml"],
+      "allowedVersions": "/^v[0-9]+\\.[0-9]+\\.[0-9]+$/",
+      "pinDigests": true
+    },
+    {
+      "description": "Auto-merge qualified LiteLLM image updates after Flux Local Success",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/berriai/litellm"],
+      "matchFileNames": ["kubernetes/apps/ai/litellm/app/helmrelease.yaml"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "groupName": null,
+      "automerge": true
     },
     {
       "description": "Group the Hindsight OCI chart and API/control-plane images for one reviewed upgrade; the API image anchor is one version decision",

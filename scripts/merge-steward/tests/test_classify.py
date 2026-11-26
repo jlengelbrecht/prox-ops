@@ -54,6 +54,18 @@ def test_parse_packages_handles_the_three_renovate_table_shapes():
     assert no_update == [{"name": "anyio", "update": None, "current": "4.15.1"}]
 
 
+def test_stock_litellm_can_only_automerge_image_updates_in_its_release_file():
+    image = "ghcr.io/berriai/litellm"
+    file = "kubernetes/apps/ai/litellm/app/helmrelease.yaml"
+    pr = make_pr(table(f"| {image} | minor | `v1.111.0` → `v1.112.0` |"))
+    assert policy_stage(pr, [file], [], POLICY).verdict == PASS
+    assert policy_stage(pr, [file, "other.yaml"], [], POLICY).verdict == NEEDS
+    assert policy_stage(pr, ["other.yaml"], [], POLICY).verdict == NEEDS
+    for package, kind in ((image, "major"), ("ghcr.io/berriai/litellm-database", "patch")):
+        candidate = make_pr(table(f"| {package} | {kind} | `v1.111.0` → `v1.112.0` |"))
+        assert policy_stage(candidate, [file], [], POLICY).verdict == NEEDS
+
+
 def test_parse_packages_ignores_tables_after_the_first():
     body = table("| app | patch | `1.0.0` → `1.0.1` |") + "\n\n### Release Notes\n| Package | Update | Change |\n|-|-|-|\n| evil | major | x |"
     assert [p["name"] for p in parse_packages(body)] == ["app"]

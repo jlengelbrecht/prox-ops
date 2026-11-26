@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+from contextlib import nullcontext
 import importlib.util
 from pathlib import Path
 import sys
@@ -17,7 +18,7 @@ class GrokTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         names = ("httpx", "litellm", "litellm.exceptions", "litellm.integrations",
-                 "litellm.integrations.custom_logger", "litellm.llms", "litellm.llms.xai",
+                 "litellm.integrations.custom_logger", "grok_response_filter", "litellm.llms", "litellm.llms.xai",
                  "litellm.llms.xai.oauth")
         cls.old = {name: sys.modules.get(name) for name in names}
         for name in names:
@@ -25,12 +26,15 @@ class GrokTests(unittest.TestCase):
         # Only the HTTP client shape is needed: network calls are replaced by
         # synthetic clients in the tests that exercise identity resolution.
         sys.modules["httpx"].Timeout = lambda *_args, **_kwargs: None
+        sys.modules["httpx"].Client = lambda **_kwargs: nullcontext(object())
         sys.modules["httpx"].AsyncClient = type("UnusedHTTPClient", (), {})
         sys.modules["litellm.integrations.custom_logger"].CustomLogger = type("CustomLogger", (), {})
         cls.AuthError = type("AuthError", (Exception,), {
             "__init__": lambda self, **kw: Exception.__init__(self, kw["message"])})
         sys.modules["litellm.exceptions"].CallerCredentialAuthenticationError = cls.AuthError
         sys.modules["litellm.llms.xai.oauth"].XAIOAuthAuthenticator = type("Auth", (), {})
+        sys.modules["grok_response_filter"].GROK_BASE = "https://cli-chat-proxy.grok.com/v1"
+        sys.modules["grok_response_filter"].grok_http_handler = lambda _transport: object()
         spec = importlib.util.spec_from_file_location(
             "project_grok_native_test", APP / "callbacks/project_grok_native.py")
         cls.module = importlib.util.module_from_spec(spec)
@@ -223,23 +227,12 @@ class GrokTests(unittest.TestCase):
         self.assertIs(asyncio.run(self.hook.async_pre_call_deployment_hook(
             request, "acompletion")), request)
 
-    def test_provider_error_is_fixed_and_scoped(self):
-        class HTTPException(Exception):
-            def __init__(self, status_code, detail):
-                self.status_code, self.detail = status_code, detail
-        fastapi = types.ModuleType("fastapi")
-        fastapi.HTTPException = HTTPException
-        request = self.request()
-        self.pre(request)
-        raw = RuntimeError("synthetic-oauth-token synthetic-subject")
-        with patch.dict(sys.modules, {"fastapi": fastapi}):
-            safe = asyncio.run(self.hook.async_post_call_failure_hook(
-                request, raw, self.owner()))
-            self.assertEqual((safe.status_code, safe.detail),
-                             (502, "Project Grok provider failed"))
-            self.assertNotIn("synthetic", str(safe.detail))
-            self.assertIsNone(asyncio.run(self.hook.async_post_call_failure_hook(
-                {"model": "project-router"}, raw, self.owner())))
+    def test_grok_backend_rejects_a_different_original_alias(self):
+        with self.assertRaises(self.AuthError):
+            asyncio.run(self.hook.async_pre_call_deployment_hook({
+                "model": self.module.BACKEND,
+                "proxy_server_request": {"body": {"model": "project-router"}},
+            }, "acompletion"))
 
     def test_refresh_identity_failure_and_concurrent_file_change(self):
         state = {"token": "synthetic-refreshed-token", "called": 0}
@@ -273,7 +266,7 @@ class GrokTests(unittest.TestCase):
             # This host's Python 3.14/3.15 asyncio executor shutdown stalls;
             # the pinned image gate exercises the real off-loop operation.
             return fn()
-        with patch.object(self.module, "XAIOAuthAuthenticator", Auth), \
+        with patch.object(self.module, "XAIOAuthAuthenticator", lambda **_: Auth()), \
              patch.object(self.module.httpx, "AsyncClient", Client), \
              patch.object(self.module.asyncio, "to_thread", immediate):
             token, subject = asyncio.run(self.module._resolve_identity())
@@ -283,7 +276,7 @@ class GrokTests(unittest.TestCase):
         class FailedAuth:
             def get_access_token(self):
                 raise RuntimeError("synthetic-secret-must-not-escape")
-        with patch.object(self.module, "XAIOAuthAuthenticator", FailedAuth), \
+        with patch.object(self.module, "XAIOAuthAuthenticator", lambda **_: FailedAuth()), \
              patch.object(self.module.asyncio, "to_thread", immediate):
             with self.assertRaises(self.AuthError) as caught:
                 asyncio.run(self.module._resolve_identity())
@@ -314,7 +307,7 @@ class GrokTests(unittest.TestCase):
                 return Stream()
         async def immediate(fn):
             return fn()
-        with patch.object(self.module, "XAIOAuthAuthenticator", Auth), \
+        with patch.object(self.module, "XAIOAuthAuthenticator", lambda **_: Auth()), \
              patch.object(self.module.httpx, "AsyncClient", Client), \
              patch.object(self.module.asyncio, "to_thread", immediate):
             with self.assertRaises(self.AuthError) as caught:

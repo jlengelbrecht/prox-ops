@@ -7,6 +7,8 @@ the before and after documents are compared field by field. Only these changes m
 - a pod-template container image on a Deployment, DaemonSet, StatefulSet or ReplicaSet:
   same repository, a non-major tag change (or a new digest on the same tag), and no
   version skew against an unchanged app.kubernetes.io/version label
+- the image of the LiteLLM migration hook container and its generated config
+  checksum, when both images are pinned in the same stable upstream release series
 - ConfigMap `data`
 - HelmRelease `spec.chart.spec.version`, non-major
 - HelmRelease `spec.values`, but only when the render shows a changed object from that
@@ -142,6 +144,23 @@ def _image_flag(before, after, old, new):
     return None
 
 
+def _litellm_migration_image(doc):
+    metadata = doc.get("metadata", {})
+    if (metadata.get("namespace"), metadata.get("name")) != ("ai", "litellm-migrations"):
+        return None
+    if metadata.get("annotations", {}).get("helm.sh/hook") != "pre-install,pre-upgrade":
+        return None
+    containers = doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    if len(containers) != 1 or containers[0].get("name") != "prisma-migrations":
+        return None
+    image = containers[0].get("image")
+    if isinstance(image, str) and re.fullmatch(
+        r"ghcr\.io/berriai/litellm:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[a-f0-9]{64}", image
+    ):
+        return image
+    return None
+
+
 def _metadata_churn(path, old, new):
     """The value of an allowlisted version label changed (never an annotation)."""
     if old is _MISSING or new is _MISSING:
@@ -215,6 +234,15 @@ def field_flag(kind, path, old, new, before, after, rendered, exceptions=()):
     """None when the change is on the allowlist, else the reason flag."""
     if _metadata_churn(path, old, new):
         return None
+    if kind == "Job":
+        old_image, new_image = _litellm_migration_image(before), _litellm_migration_image(after)
+        if old_image and new_image and old_image != new_image:
+            if path == ("spec", "template", "spec", "containers", 0, "image"):
+                return _image_flag(before, after, old_image, new_image)
+            if (path == ("metadata", "annotations", "checksum/config")
+                    and all(re.fullmatch(r"[a-f0-9]{64}", str(v)) for v in (old, new))
+                    and not _image_flag(before, after, old_image, new_image)):
+                return None
     if kind in WORKLOADS:
         if (len(path) == 6 and path[:4] == ("spec", "template", "spec", "containers") or
                 len(path) == 6 and path[:4] == ("spec", "template", "spec", "initContainers")) and path[5] == "image":

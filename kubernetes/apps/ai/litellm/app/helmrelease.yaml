@@ -67,12 +67,12 @@ spec:
                   name: PYTHONPATH
                   value: /opt/litellm-callbacks
   values:
-    # Qualified Grok image. The chart renders repository:tag; the digest pins
-    # the pull independently of the source commit tag.
+    # The chart renders repository:tag. Keep the upstream tag and digest
+    # together so CI tests exactly what the cluster will run.
     image:
-      repository: ghcr.io/jlengelbrecht/litellm-grok
+      repository: ghcr.io/berriai/litellm
       pullPolicy: Always
-      tag: sha-c9c8091c333bc227417c1bf009f130643347971f@sha256:5d3875b49ad617ba1366f7e59b592f2e70e0e2b3b5c1d55720aa9888bd0f9d1b
+      tag: v1.111.0@sha256:ce00096d012719d58c52cecfa373f7c6256dd1b0ff08f6fa607e10e9628f1f46
 
     # Replica count. Must stay 1: the ChatGPT login (auth.json on the RWO PVC below) uses a
     # single-use refresh token and LiteLLM has no cross-process lock around the refresh. A

@@ -158,7 +158,8 @@ class GuardTests(unittest.TestCase):
         config = yaml.safe_load((APP / 'configmap.yaml').read_text().split('---', 1)[-1])
         inner = yaml.safe_load(config['data']['config.yaml'])
         # Stage 1 installs the module before either the alias or callback is enabled.
-        self.assertNotIn('callbacks', inner['litellm_settings'])
+        self.assertNotIn('copilot_session_guard.proxy_handler_instance',
+                         inner['litellm_settings'].get('callbacks', []))
         aliases = [m for m in inner['model_list'] if m['model_name'] == 'project-copilot-explicit']
         self.assertEqual(aliases, [])
         helm = yaml.safe_load((APP / 'helmrelease.yaml').read_text().split('---', 1)[-1])
@@ -168,7 +169,8 @@ class GuardTests(unittest.TestCase):
         self.assertIn('mountPath: /opt/litellm-callbacks', patch_text)
         self.assertIn('name: PYTHONPATH', patch_text)
         kustomization = yaml.safe_load((APP / 'kustomization.yaml').read_text().split('---', 1)[-1])
-        self.assertEqual(kustomization['configMapGenerator'][0]['files'], ['copilot_session_guard.py=callbacks/copilot_session_guard.py'])
+        self.assertIn('copilot_session_guard.py=callbacks/copilot_session_guard.py',
+                      kustomization['configMapGenerator'][0]['files'])
         contract = yaml.safe_load((ROOT / 'tests/litellm/image_contract.json').read_text())
         self.assertEqual(contract['schema'], 'litellm-copilot-image-contract/1')
         self.assertEqual(contract['interfaces']['callback'], 'copilot_session_guard.proxy_handler_instance')

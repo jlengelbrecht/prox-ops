@@ -94,7 +94,8 @@ class ConfigTests(unittest.TestCase):
         """Verify rendered guard wiring."""
         self.assertEqual(self.config["litellm_settings"]["callbacks"],
                          ["project_router_guard.proxy_handler_instance",
-                          "project_grok_native.proxy_handler_instance"])
+                          "project_grok_native.proxy_handler_instance",
+                          "local_model_content_logging.proxy_handler_instance", "langfuse_otel"])
         kust = yaml.safe_load((APP / "kustomization.yaml").read_text())
         self.assertIn("project_router_guard.py=callbacks/project_router_guard.py",
                       kust["configMapGenerator"][0]["files"])

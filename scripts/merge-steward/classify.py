@@ -294,6 +294,11 @@ def policy_stage(pr, files, job_files, policy):
         return Stage("policy", NEEDS, "Renovate marked the update as breaking")
     if not packages:
         return Stage("policy", NEEDS, "no Renovate package table in the PR body")
+    stock_litellm = any(pkg["name"] == "ghcr.io/berriai/litellm" for pkg in packages)
+    if stock_litellm:
+        if (len(packages) != 1 or set(files) != {"kubernetes/apps/ai/litellm/app/helmrelease.yaml"}
+                or (packages[0]["update"] or fallback) not in {"digest", "patch", "minor"}):
+            return Stage("policy", NEEDS, "LiteLLM automation is limited to its stock image release")
     for pkg in packages:
         kind = pkg["update"] or fallback
         if not pkg["name"] or not kind:
@@ -305,7 +310,8 @@ def policy_stage(pr, files, job_files, policy):
         if kind == "minor" and pkg["current"].split(".")[0] == "0" and not exception:
             return Stage("policy", NEEDS, f"{pkg['name']} is a 0.x minor update")
         for rule in policy["manual_packages"]:
-            if kind in rule["update_types"] and any(name_match(p, pkg["name"]) for p in rule["match"]):
+            patterns = (p for p in rule["match"] if not (stock_litellm and p == "/litellm/"))
+            if kind in rule["update_types"] and any(name_match(p, pkg["name"]) for p in patterns):
                 return Stage("policy", NEEDS, f"{pkg['name']} {kind}: {rule['reason']}")
     names = ", ".join(f"{p['name']} ({p['update'] or fallback})" for p in packages)
     return Stage("policy", PASS, f"{'release exception' if exception else 'default tier'}: {names}")
