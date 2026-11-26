@@ -49,6 +49,27 @@ def test_minor_image_bump_passes():
     assert verdict("Deployment", pod("app:1.2.0"), pod("app:1.3.0")).verdict == PASS
 
 
+def test_only_litellm_stock_migration_image_changes_can_pass():
+    def migration(tag, digest, name="litellm-migrations"):
+        job = pod(f"ghcr.io/berriai/litellm:{tag}@sha256:{digest * 64}", kind="Job")
+        job["metadata"] = {"name": name, "namespace": "ai", "annotations": {
+            "helm.sh/hook": "pre-install,pre-upgrade",
+        }}
+        job["spec"]["template"]["spec"]["containers"][0]["name"] = "prisma-migrations"
+        return job
+
+    old, new = migration("v1.111.0", "a"), migration("v1.112.0", "b")
+    old["metadata"]["annotations"]["checksum/config"] = "a" * 64
+    new["metadata"]["annotations"]["checksum/config"] = "b" * 64
+    assert verdict("Job", old, new).verdict == PASS
+    assert verdict("Job", old, migration("v2.0.0", "b")).verdict == NEEDS
+    assert verdict("Job", old, migration("v1.112.0-rc.1", "b")).verdict == NEEDS
+    assert verdict("Job", migration("v1.111.0", "a", "another-job"),
+                   migration("v1.112.0", "b", "another-job")).verdict == NEEDS
+    new["spec"]["template"]["spec"]["containers"][0]["command"] = ["sh"]
+    assert verdict("Job", old, new).verdict == NEEDS
+
+
 def test_image_major_in_a_minor_pr_is_flagged():
     assert verdict("Deployment", pod("app:1.9.0"), pod("app:2.0.0")).reason.startswith("major")
 
