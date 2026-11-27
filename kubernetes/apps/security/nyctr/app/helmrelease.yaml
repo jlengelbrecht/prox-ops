@@ -1,7 +1,7 @@
 ---
 # Nyctr network console: what the network blocked, who asked for access, and
-# guest Wi-Fi. Read-only as deployed here: collection only reads, and Nyctr may
-# change a source only when its integration is named in providerWrites.
+# guest Wi-Fi. Collection only reads; NextDNS changes require an administrator's
+# access rule as well as the providerWrites permission below.
 #
 # The chart is Nyctr's own (ocirepository.yaml). It refuses to render unless
 # the image, public URL, trusted proxies, database, sign-in and ingress policy
@@ -150,15 +150,26 @@ spec:
           existingSecret: nyctr-connectors
           key: unifi-api-key
 
-    # Read-only: Nyctr changes nothing at any source. Later, one integration
-    # at a time: [nextdns] first, then [nextdns, unifi_network].
-    providerWrites: []
-    # No schedule yet: collect from the console while the adapters are being
-    # checked against the real sources. 60 to 86400 seconds once trusted.
+    # Infrastructure permission only; stored rules and tier switches remain
+    # administrator-controlled. An opening affects the entire NextDNS profile.
+    providerWrites: [nextdns]
+
+    # Setup chooses the model alias and /v1 endpoint. Only this HTTPS origin
+    # may receive this dedicated key; no default model or paid fallback.
+    # Provision Automation/nyctr-model/api-key before merging (see operations).
+    assistant:
+      hosts:
+        - https://ai-api.homelab0.org
+      secrets:
+        - envName: NYCTR_MODEL_SECRET_LITELLM
+          existingSecret: nyctr-model
+          key: api-key
+    # Zero supplies no starting interval: alpha.7 uses its 15-minute default
+    # until an administrator saves a schedule in the console.
     collection:
       intervalSeconds: 0
 
     # The process reads its secrets only at start: roll the pod when
-    # nyctr-db, nyctr-oidc or nyctr-connectors change.
+    # nyctr-db, nyctr-oidc, nyctr-connectors or nyctr-model change.
     podAnnotations:
       reloader.stakater.com/auto: "true"
