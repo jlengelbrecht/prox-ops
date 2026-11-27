@@ -1,0 +1,33 @@
+---
+# The AI-Access Connect server: reached only by Open Connector, and
+# talks only to DNS and the 1Password service.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: onepassword-connect-ai-access
+spec:
+  endpointSelector:
+    matchLabels:
+      homelab0.org/connect: ai-access
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: open-connector
+      toPorts:
+        - ports: [{port: "8443", protocol: TCP}]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+          rules:
+            dns:
+              - matchName: 1password.com
+              - matchPattern: "*.1password.com"
+    - toFQDNs:
+        - matchName: 1password.com
+        - matchPattern: "*.1password.com"
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]

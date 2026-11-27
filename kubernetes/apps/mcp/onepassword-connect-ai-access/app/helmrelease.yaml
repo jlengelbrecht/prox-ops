@@ -1,0 +1,118 @@
+---
+# A Connect server dedicated to the Homelab0 AI-Access vault. It never shares
+# the onepassword-connect deployment, vault or store that External Secrets uses,
+# and its only client is the Open Connector workload in this namespace.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: onepassword-connect-ai-access
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: connect
+      # renovate: datasource=helm registryUrl=https://1password.github.io/connect-helm-charts
+      version: 2.1.1
+      sourceRef:
+        kind: HelmRepository
+        name: 1password
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  postRenderers:
+    - kustomize:
+        patches:
+          # Restart Connect when the bootstrap rewrites its credentials.
+          - target:
+              kind: Deployment
+              name: onepassword-connect
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: onepassword-connect
+                annotations:
+                  secret.reloader.stakater.com/reload: onepassword-connect-ai-access-credentials,onepassword-connect-ai-access-tls
+          - target:
+              kind: Deployment
+              name: onepassword-connect
+            patch: |
+              - op: add
+                path: /spec/template/metadata/labels/homelab0.org~1connect
+                value: ai-access
+              - op: add
+                path: /spec/template/spec/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  fsGroup: 999
+                  seccompProfile:
+                    type: RuntimeDefault
+              - op: add
+                path: /spec/template/spec/containers/0/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
+              - op: add
+                path: /spec/template/spec/containers/0/resources
+                value:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+              - op: add
+                path: /spec/template/spec/containers/1/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
+              - op: add
+                path: /spec/template/spec/containers/1/resources
+                value:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+              # Cilium FQDN egress rules drop names resolved through the search
+              # path (ndots default 5); force the absolute name lookup first.
+              - op: add
+                path: /spec/template/spec/dnsConfig
+                value:
+                  options:
+                    - name: ndots
+                      value: "1"
+  values:
+    connect:
+      # Empty, so the chart does not render a credentials Secret of its own:
+      # it reads the one the operator bootstrap writes.
+      credentials_base64: ""
+      credentialsName: onepassword-connect-ai-access-credentials
+      credentialsKey: 1password-credentials.json
+      serviceType: ClusterIP
+      tls:
+        enabled: true
+        secret: onepassword-connect-ai-access-tls
+    operator:
+      create: false

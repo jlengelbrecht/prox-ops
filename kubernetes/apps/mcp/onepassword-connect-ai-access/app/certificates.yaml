@@ -1,0 +1,23 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: onepassword-connect-ai-access-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: onepassword-connect-ai-access
+spec:
+  commonName: onepassword-connect
+  secretName: onepassword-connect-ai-access-tls
+  dnsNames:
+    - onepassword-connect
+  usages:
+    - digital signature
+    - server auth
+  issuerRef:
+    kind: Issuer
+    name: onepassword-connect-ai-access-selfsigned
