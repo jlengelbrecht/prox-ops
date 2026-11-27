@@ -1,0 +1,19 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: onepassword-connect-ai-access
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: cert-manager-operator
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/mcp/onepassword-connect-ai-access/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  targetNamespace: mcp
+  wait: true

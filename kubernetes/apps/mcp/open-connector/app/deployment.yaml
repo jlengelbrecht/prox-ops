@@ -4,7 +4,7 @@ kind: Deployment
 metadata:
   name: open-connector
   annotations:
-    secret.reloader.stakater.com/reload: open-connector-secrets
+    secret.reloader.stakater.com/reload: open-connector-secrets,onepassword-connect-ai-access-tls
 spec:
   replicas: 1
   strategy:
@@ -39,6 +39,9 @@ spec:
             - {name: OOMOL_CONNECT_ORIGIN, value: "https://open-connector.homelab0.org"}
             - {name: OOMOL_CONNECT_ALLOWED_ACTIONS, value: hackernews.get_top_stories}
             - {name: OOMOL_CONNECT_BLOCKED_PROXIES, value: "*"}
+            # The native provider rejects .local URLs. The pod DNS search path resolves the short Service name.
+            - {name: OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS, value: onepassword-connect}
+            - {name: NODE_EXTRA_CA_CERTS, value: /run/onepassword-connect/tls.crt}
           envFrom:
             - secretRef:
                 name: open-connector-secrets
@@ -63,9 +66,16 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /app/data}
             - {name: temp, mountPath: /tmp}
+            - {name: onepassword-connect-ca, mountPath: /run/onepassword-connect, readOnly: true}
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: open-connector-data
         - name: temp
           emptyDir: {}
+        - name: onepassword-connect-ca
+          secret:
+            secretName: onepassword-connect-ai-access-tls
+            optional: true
+            items:
+              - {key: tls.crt, path: tls.crt}

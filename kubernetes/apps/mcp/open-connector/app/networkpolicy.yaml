@@ -30,7 +30,13 @@ spec:
           rules:
             dns:
               - matchName: hacker-news.firebaseio.com
+              - matchName: onepassword-connect.mcp.svc.cluster.local
     - toFQDNs:
         - matchName: hacker-news.firebaseio.com
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            homelab0.org/connect: ai-access
+      toPorts:
+        - ports: [{port: "8443", protocol: TCP}]
