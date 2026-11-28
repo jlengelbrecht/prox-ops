@@ -48,6 +48,14 @@
 
 # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
 #
+# 1.9.3 (STORY-049-R1, retired local execution routes):
+#   - local-code-standard and local-general become nonselectable because
+#     their retired gateway launch path cannot execute. Both Claude routing
+#     pairs are removed; their priority gaps remain. Historical profile,
+#     model and placement definitions remain. No fallback is introduced.
+#   - A route consumer can no longer receive either retired profile.
+#   - No shape changed; schema_version remains 1.
+#
 # 1.9.2 (SPEKTR-070-CONFIG, v0.7.0 usage-aware routing) - REQUIRES v0.5.0+
 # FOR THE NEW KEYS; v0.7.0 IS DEPLOYED:
 #   - entitlement_pools.anthropic-max and .openai-plus gain `usage`
@@ -272,11 +280,11 @@
 #     the edge as a second candidate, physical ordered edge-before-KServe
 #     to match prefer_order.
 #   Nothing was removed or re-typed, so schema_version stays 1.
-version: "1.9.2"
+version: "1.9.3"
 # Structural schema version. Consumers MUST refuse a major they do not
 # implement rather than best-effort parsing an unknown shape.
 schema_version: 1
-updated: "2026-10-14"
+updated: "2026-11-18"
 epic: EPIC-035
 story: STORY-035-1
 # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -980,10 +988,6 @@ routing_pairs:
     bands: [strong]
     priority: 0
   - harness: claude
-    model_profile: local-code-standard
-    bands: [standard]
-    priority: 1
-  - harness: claude
     model_profile: claude/standard
     bands: [standard]
     priority: 2
@@ -999,10 +1003,6 @@ routing_pairs:
     model_profile: devin/free
     bands: [standard]
     priority: 5
-  - harness: claude
-    model_profile: local-general
-    bands: [docs]
-    priority: 6
   - harness: opencode
     model_profile: openai/strong
     bands: [standard, strong]
@@ -1084,7 +1084,7 @@ profiles:
       which is what makes it usable for agentic work.
     cost_class: free
     hosting: local
-    selectable: true
+    selectable: false
     capabilities: [chat, tools]
     min_context: 65536
     alignment: standard
@@ -1113,6 +1113,8 @@ profiles:
         placement: kserve-a5000
       - model_id: qwen36-27b
         placement: bazzite-5090
+    blocked_by:
+      - retired gateway launch path is unavailable; owner must approve and validate a new execution path before reselecting this profile
     notes: >-
       Three candidates as of 1.4.0: the edge (cachyos-7900xtx) is listed
       first to match policies.placement_policy.prefer-warm-local's
@@ -1279,7 +1281,7 @@ profiles:
       sole candidate.
     cost_class: free
     hosting: local
-    selectable: true
+    selectable: false
     # qwen36-27b is the only remaining candidate, so the floor is exactly
     # what it provides.
     capabilities: [chat, tools]
@@ -1295,6 +1297,8 @@ profiles:
     physical:
       - model_id: qwen36-27b
         placement: kserve-a5000
+    blocked_by:
+      - retired gateway launch path is unavailable; owner must approve and validate a new execution path before reselecting this profile
     notes: >-
       Retired STORY-035-8c: hermes-jarvis and qwen-omni were removed from
       models[] and no replacement was selected for either. qwen36-27b
