@@ -96,10 +96,18 @@ class FilterContract(unittest.TestCase):
         self.assertEqual(env['OOMOL_CONNECT_OAUTH_AUTH_MODE'], 'mixed')
         self.assertEqual(env['OOMOL_CONNECT_OAUTH_ALLOW_DCR'], 'false')
         self.assertEqual(env['OOMOL_CONNECT_OAUTH_ALLOW_CIMD'], 'false')
-        route = yaml.safe_load((connector / 'httproute-ai-access.yaml').read_text())
+        route = yaml.safe_load((connector.parent / 'ai-access-route/httproute.yaml').read_text())
         self.assertEqual(route['spec']['rules'][0]['matches'], [
             {'method': 'POST', 'path': {'type': 'Exact', 'value': '/v1/proxy/one_password'}},
         ])
+        flux = next(
+            entry for entry in yaml.safe_load_all((connector.parent / 'ks.yaml').read_text())
+            if entry['metadata']['name'] == 'open-connector-ai-access-route'
+        )
+        self.assertEqual(
+            {dependency['name'] for dependency in flux['spec']['dependsOn']},
+            {'onepassword-connect-ai-access', 'open-connector', 'agentgateway'},
+        )
 
 
 if __name__ == '__main__':
