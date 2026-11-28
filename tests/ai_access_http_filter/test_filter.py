@@ -84,6 +84,23 @@ class FilterContract(unittest.TestCase):
                  for group in rule['toPorts'] for p in group['ports']]
         self.assertEqual(ports, ['8443'])
 
+    def test_open_connector_proxy_requires_runtime_auth(self):
+        connector = ROOT / 'kubernetes/apps/mcp/open-connector/app'
+        deployment = yaml.safe_load((connector / 'deployment.yaml').read_text())
+        container = deployment['spec']['template']['spec']['containers'][0]
+        env = {entry['name']: entry.get('value') for entry in container['env']}
+        self.assertNotIn('envFrom', container)
+        self.assertNotIn('OOMOL_CONNECT_RUNTIME_TOKEN', env)
+        self.assertEqual(env['OOMOL_CONNECT_ALLOWED_PROXIES'], 'one_password')
+        self.assertEqual(env['OOMOL_CONNECT_OAUTH_ENABLED'], 'true')
+        self.assertEqual(env['OOMOL_CONNECT_OAUTH_AUTH_MODE'], 'mixed')
+        self.assertEqual(env['OOMOL_CONNECT_OAUTH_ALLOW_DCR'], 'false')
+        self.assertEqual(env['OOMOL_CONNECT_OAUTH_ALLOW_CIMD'], 'false')
+        route = yaml.safe_load((connector / 'httproute-ai-access.yaml').read_text())
+        self.assertEqual(route['spec']['rules'][0]['matches'], [
+            {'method': 'POST', 'path': {'type': 'Exact', 'value': '/v1/proxy/one_password'}},
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()
