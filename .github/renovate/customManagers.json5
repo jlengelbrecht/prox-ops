@@ -3,6 +3,18 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Track the official Envoy image embedded in the AI-Access Helm patch",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/mcp/onepassword-connect-ai-access/app/helmrelease\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>docker\\.io/envoyproxy/envoy):(?<currentValue>distroless-v[0-9]+\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "regex:^distroless-v(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)$"
+    },
+    {
+      "customType": "regex",
       "description": "Track Nyctr image release and digest without adding an image tag value",
       "managerFilePatterns": [
         "/^kubernetes/apps/security/nyctr/app/helmrelease\\.yaml$/"
