@@ -44,7 +44,11 @@ spec:
             patch: |
               - op: add
                 path: /spec/strategy
-                value: {type: Recreate}
+                # Keep the live strategy type so server-side apply can update
+                # the defaulted rollingUpdate fields. Avoid a surge replica.
+                value:
+                  type: RollingUpdate
+                  rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
               - op: add
                 path: /spec/template/metadata/labels/homelab0.org~1connect
                 value: ai-access
