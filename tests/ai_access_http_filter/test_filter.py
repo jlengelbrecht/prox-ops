@@ -62,7 +62,10 @@ class FilterContract(unittest.TestCase):
         pod = deployment['template']
         service = resources['Service']['spec']
         connects = {c['name']: c for c in pod['spec']['containers']}
-        self.assertEqual(deployment['strategy']['type'], 'Recreate')
+        self.assertEqual(
+            deployment['strategy'],
+            {'type': 'RollingUpdate', 'rollingUpdate': {'maxSurge': 0, 'maxUnavailable': 1}},
+        )
         self.assertEqual(service['selector'], {'app': 'onepassword-connect'})
         ports = {port['name']: port for port in service['ports']}
         self.assertEqual(ports['connect-api-https']['port'], 8443)
