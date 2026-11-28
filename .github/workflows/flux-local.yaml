@@ -34,6 +34,7 @@ jobs:
           files: |
             kubernetes/**
             tests/flate/**
+            tests/ai_access_http_filter/**
             scripts/flate/**
             scripts/merge-steward/render_pairs.py
             .github/workflows/flux-local.yaml
@@ -129,6 +130,22 @@ jobs:
 
       - name: Test the diff comment builder
         run: python3 -m unittest discover -s tests/flate -p 'test*.py'
+
+      - name: Verify the AI-Access Connect filter contract
+        run: |
+          set -euo pipefail
+          export FILTER_RENDERED_HELM="$RUNNER_TEMP/ai-access-connect.yaml"
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+            --tmpfs /tmp:exec,mode=1777 \
+            -v "$PWD:/github/workspace:ro" -w /github/workspace \
+            "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+            build hr onepassword-connect-ai-access --namespace mcp \
+            --path kubernetes/flux/cluster --no-progress --supply tests/flate/supply.yaml \
+            --allow-missing-kinds Secret,CustomResourceDefinition > "$FILTER_RENDERED_HELM"
+          python3 -m venv "$RUNNER_TEMP/ai-access-filter-tests"
+          "$RUNNER_TEMP/ai-access-filter-tests/bin/pip" install PyYAML==6.0.3
+          "$RUNNER_TEMP/ai-access-filter-tests/bin/python" -m unittest discover -s tests/ai_access_http_filter -v
 
       # The container gets no token, a read-only checkout and no capabilities.
       # Sources that need credentials (the private homelab-identity repository and

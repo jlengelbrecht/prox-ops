@@ -37,10 +37,14 @@ spec:
                 name: onepassword-connect
                 annotations:
                   secret.reloader.stakater.com/reload: onepassword-connect-ai-access-credentials,onepassword-connect-ai-access-tls
+                  configmap.reloader.stakater.com/reload: onepassword-connect-ai-access-envoy-config
           - target:
               kind: Deployment
               name: onepassword-connect
             patch: |
+              - op: add
+                path: /spec/strategy
+                value: {type: Recreate}
               - op: add
                 path: /spec/template/metadata/labels/homelab0.org~1connect
                 value: ai-access
@@ -95,6 +99,46 @@ spec:
                     memory: 64Mi
                   limits:
                     memory: 256Mi
+              - op: add
+                path: /spec/template/spec/containers/0/volumeMounts/1/readOnly
+                value: true
+              - op: add
+                path: /spec/template/spec/volumes/-
+                value:
+                  name: envoy-config
+                  configMap:
+                    name: onepassword-connect-ai-access-envoy-config
+              - op: add
+                path: /spec/template/spec/containers/-
+                value:
+                  name: envoy
+                  # renovate: datasource=docker depName=envoyproxy/envoy
+                  image: docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994
+                  args: ["-c", "/etc/envoy/envoy.yaml"]
+                  ports:
+                    - {name: filter-https, containerPort: 8443, protocol: TCP}
+                  readinessProbe:
+                    tcpSocket: {port: filter-https}
+                    initialDelaySeconds: 2
+                    periodSeconds: 5
+                  livenessProbe:
+                    tcpSocket: {port: filter-https}
+                    initialDelaySeconds: 10
+                    periodSeconds: 30
+                  securityContext:
+                    runAsNonRoot: true
+                    runAsUser: 101
+                    runAsGroup: 101
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities: {drop: [ALL]}
+                    seccompProfile: {type: RuntimeDefault}
+                  resources:
+                    requests: {cpu: 25m, memory: 64Mi}
+                    limits: {cpu: 250m, memory: 128Mi}
+                  volumeMounts:
+                    - {name: envoy-config, mountPath: /etc/envoy, readOnly: true}
+                    - {name: tls-cert, mountPath: /etc/connect-tls, readOnly: true}
               # Cilium FQDN egress rules drop names resolved through the search
               # path (ndots default 5); force the absolute name lookup first.
               - op: add
@@ -103,11 +147,23 @@ spec:
                   options:
                     - name: ndots
                       value: "1"
+          - target:
+              kind: Service
+              name: onepassword-connect
+            patch: |
+              - op: replace
+                path: /spec/ports/1/port
+                value: 8443
+              - op: add
+                path: /spec/ports/1/targetPort
+                value: 8443
   values:
     connect:
       # Empty, so the chart does not render a credentials Secret of its own:
       # it reads the one the operator bootstrap writes.
       credentials_base64: ""
+      api:
+        httpsPort: 9443
       credentialsName: onepassword-connect-ai-access-credentials
       credentialsKey: 1password-credentials.json
       serviceType: ClusterIP

@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: onepassword-connect-ai-access-envoy-config
+data:
+  envoy.yaml: |
+    # The item route contains two fixed-length IDs and compiles to 126 RE2 instructions.
+    layered_runtime:
+      layers:
+        - name: static
+          static_layer:
+            re2.max_program_size.error_level: 150
+    static_resources:
+      listeners:
+        - name: ai_access
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 8443}
+          filter_chains:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  common_tls_context:
+                    tls_certificates:
+                      - certificate_chain: {filename: /etc/connect-tls/tls.crt}
+                        private_key: {filename: /etc/connect-tls/tls.key}
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ai_access
+                    normalize_path: true
+                    merge_slashes: true
+                    path_with_escaped_slashes_action: REJECT_REQUEST
+                    request_timeout: 30s
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              operation: "%ROUTE_NAME%"
+                              status: "%RESPONSE_CODE%"
+                              duration_ms: "%DURATION%"
+                    route_config:
+                      name: connect
+                      virtual_hosts:
+                        - name: connect
+                          domains: ["*"]
+                          request_headers_to_remove:
+                            - x-http-method-override
+                            - x-http-method
+                            - x-method-override
+                            - x-original-method
+                            - x-original-url
+                            - x-rewrite-url
+                            - x-envoy-original-path
+                          routes:
+                            - name: list_vaults
+                              match:
+                                path: /v1/vaults
+                                headers: [{name: ":method", string_match: {exact: GET}}]
+                              route: {cluster: connect}
+                            - name: list_items
+                              match:
+                                safe_regex: {regex: '/v1/vaults/[a-z0-9]{26}/items'}
+                                headers: [{name: ":method", string_match: {exact: GET}}]
+                              route: {cluster: connect}
+                            - name: create_item
+                              match:
+                                safe_regex: {regex: '/v1/vaults/[a-z0-9]{26}/items'}
+                                headers: [{name: ":method", string_match: {exact: POST}}]
+                              route: {cluster: connect}
+                            - name: get_item
+                              match:
+                                safe_regex: {regex: '/v1/vaults/[a-z0-9]{26}/items/[a-z0-9]{26}'}
+                                headers: [{name: ":method", string_match: {exact: GET}}]
+                              route: {cluster: connect}
+                            - name: denied
+                              match: {prefix: /}
+                              direct_response: {status: 403}
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: connect
+          connect_timeout: 2s
+          type: STATIC
+          load_assignment:
+            cluster_name: connect
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: {address: 127.0.0.1, port_value: 9443}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: onepassword-connect
+              common_tls_context:
+                validation_context:
+                  trusted_ca: {filename: /etc/connect-tls/tls.crt}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher: {exact: onepassword-connect}
