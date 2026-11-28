@@ -8,7 +8,7 @@
 # the OpenSSL provider is at /usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so;
 # the signer uses neither (it calls yubihsm-shell directly). yubihsm-connector
 # is the one process that holds the USB device when the HSM is shared.
-FROM docker.io/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM docker.io/library/debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
