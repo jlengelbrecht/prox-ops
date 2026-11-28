@@ -1,8 +1,8 @@
 ---
 # Hindsight memory API + control-plane UI, official chart 1.2.1, images
 # pinned by digest. External database on the shared CloudNativePG cluster
-# (see `postgresql` below), no TEI/HPA/ingress. The dedicated worker is
-# rendered at zero replicas (see `worker` below). Secrets arrive through
+# (see `postgresql` below), no TEI/ingress. The dedicated worker is
+# controlled by the HPA (see `worker` below). Secrets arrive through
 # `existingSecret`; the chart never renders its own Secret.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -48,26 +48,12 @@ spec:
   #      provider hosts (networkpolicy.yaml) only match a query for the exact
   #      name; the default ndots:5 search path would try the cluster suffixes
   #      first.
-  #   4. hindsight-api HINDSIGHT_API_WORKER_ENABLED: with worker.enabled the
-  #      chart sets it to "false" on the API. While the worker runs zero
-  #      replicas the API's in-process worker must keep processing, so the
-  #      entry is removed and the API renders as it did before the worker.
-  #      The `test` op fails the render if the chart moves the entry.
+  #   4. With worker.enabled, the chart sets HINDSIGHT_API_WORKER_ENABLED
+  #      to false on the API. Dedicated workers own background claims.
   #   5. hindsight-worker StatefulSet: the same token and ndots rules as the
-  #      API, plus
-  #      - replicas 0 pinned here, whatever the chart defaults an unset or
-  #        zero replicaCount to; it stays at zero until qualification;
-  #      - the chart already sets HINDSIGHT_API_WORKER_ID from the pod name
-  #        (each ordinal keeps its own ID, so startup recovery reclaims only
-  #        its own rows), but it also copies every api.env key, including the
-  #        API's fixed ID. That copy is removed (guarded by `test`, like 4);
-  #      - required podAffinity to the API pod: the CODEX_HOME claim is RWO
-  #        and the worker mounts that same claim, so it can only run on the
-  #        API's node. This does not make sharing the OAuth session safe;
-  #        that still needs a physical test;
-  #      - a 60 s grace period, which gives the worker time to release its
-  #        claimed rows after SIGTERM. It does not prove drain or replay
-  #        safety.
+  #      API, plus a guarded removal of chart replicas: 0 for HPA ownership;
+  #      stable per-ordinal worker ID; API pod affinity for the RWO auth claim;
+  #      and 150 s grace beyond the 120 s shutdown backstop.
   #   6. Explicit required gateway key on API and worker: this env entry
   #      overrides any stale key in the shared envFrom Secret. A missing
   #      dedicated Secret prevents pod startup.
@@ -103,17 +89,6 @@ spec:
               kind: Deployment
               name: hindsight-api
             patch: |
-              - op: test
-                path: /spec/template/spec/containers/0/env/2
-                value:
-                  name: HINDSIGHT_API_WORKER_ENABLED
-                  value: "false"
-              - op: remove
-                path: /spec/template/spec/containers/0/env/2
-          - target:
-              kind: Deployment
-              name: hindsight-api
-            patch: |
               - op: add
                 path: /spec/template/spec/containers/0/env/-
                 value:
@@ -127,9 +102,11 @@ spec:
               kind: StatefulSet
               name: hindsight-worker
             patch: |
-              - op: add
+              - op: test
                 path: /spec/replicas
                 value: 0
+              - op: remove
+                path: /spec/replicas
               - op: add
                 path: /spec/template/spec/automountServiceAccountToken
                 value: false
@@ -141,7 +118,7 @@ spec:
                       value: "1"
               - op: add
                 path: /spec/template/spec/terminationGracePeriodSeconds
-                value: 60
+                value: 150
               - op: test
                 path: /spec/template/spec/containers/0/env/40
                 value:
@@ -205,7 +182,8 @@ spec:
           HINDSIGHT_API_RETAIN_LLM_MODEL: "hindsight-retain"
           HINDSIGHT_API_REFLECT_LLM_MODEL: "hindsight-reflect"
           HINDSIGHT_API_CONSOLIDATION_LLM_MODEL: "hindsight-reflect"
-          # Initial ceilings: they bound concurrency and burst shape, not spend
+          # Per-process ceilings: API 1 + at most two workers 1 each = 3; they
+          # bound concurrency and burst shape, not spend
           # (the subscription is rate-windowed, shared with Hermes and any
           # interactive Codex use on the same account; a 429 is retried once
           # and then fails the operation loud). A retain answer cut by the
@@ -214,12 +192,12 @@ spec:
           # finish_reason=length is accepted and stored, and free-form output
           # is not rejected for finish_reason alone. Raise a cap deliberately
           # when finish_reason=length shows up in traces, never to hide it.
-          HINDSIGHT_API_LLM_MAX_CONCURRENT: "2"
+          HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
           # 1 capped retain near 175 LLM calls an hour: a backlog built up, and
           # batches waiting on the permit hit the 1h wall-clock limit and failed.
-          # The global limit above also applies, and 2 is the subscription
-          # budget, so a higher value here does nothing.
-          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "2"
+          # The global limit above also applies. The three-call aggregate
+          # bound needs measured provider validation before activation.
+          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
           HINDSIGHT_API_METRICS_BACKLOG_ENABLED: "true"
           HINDSIGHT_API_METRICS_INCLUDE_BANK_ID: "true"
           HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT: "1"
@@ -272,11 +250,10 @@ spec:
           # The bundled LiteLLM SDK otherwise tries to fetch its cost map at
           # import and loses ~23 s to the dropped SYN before using its local copy.
           LITELLM_LOCAL_MODEL_COST_MAP: "True"
-          # Shared CloudNativePG instance at PostgreSQL's default
-          # max_connections=100: the image's default pool (max 100) could take
-          # every slot from the other tenants. 20 is the driver's own default;
-          # the managed role also carries connectionLimit 25 on the cluster side.
-          HINDSIGHT_API_DB_POOL_MAX_SIZE: "20"
+          # Shared CloudNativePG role limit 25: API pool 8 plus two workers
+          # at pool 3 + three direct tasks each leaves five for jobs/startup.
+          HINDSIGHT_API_DB_POOL_MIN_SIZE: "2"
+          HINDSIGHT_API_DB_POOL_MAX_SIZE: "8"
           # Reserve one of the existing worker slots for page/mental-model
           # refresh; this is a floor within the slot budget, not added capacity.
           HINDSIGHT_API_WORKER_REFRESH_MENTAL_MODEL_RESERVED_SLOTS: "1"
@@ -323,35 +300,28 @@ spec:
           cpu: "2"
           memory: 3Gi
 
-    # Dedicated worker, held at zero replicas (the post-render patch pins
-    # spec.replicas) until auth sharing, provider budget, database peak,
-    # drain recovery and bank fairness have been tested on real pods. It runs
-    # the API image with the API's env, except for the values below, the
-    # chart's worker defaults (port 8889, poll/batch/retry settings) and the
-    # per-pod HINDSIGHT_API_WORKER_ID (see the post-render notes). These
-    # caps have not been qualified yet. Before any replica runs, the API pool
-    # (20) and LLM ceiling (2) must come down, or the shared role
-    # connectionLimit 25 and the subscription budget are exceeded.
-    # Each worker process can hold its pool plus one direct connection per
-    # busy slot (vector index maintenance opens its own connection for
-    # CREATE INDEX CONCURRENTLY), so its database peak is pool max + slots.
-    # The pool minimum is set because its default (5) is above the max here
-    # and the pool would refuse to start.
+    # Dedicated worker with HPA-owned replicas (1..2). The chart input is
+    # zero only to make post-render removal fail closed if chart behavior
+    # changes. The API poller is disabled; each worker keeps its pod-name ID.
+    # Three slots reserve one each for refresh and consolidation, leaving one
+    # shared slot. Pool 3 plus three possible direct task connections gives
+    # six connections per worker. Live bounds and drain behavior still need
+    # independent qualification before production activation.
     # It mounts the API's CODEX_HOME claim as the whole directory, never an
     # auth.json subPath: the provider swaps the file with os.replace, and a
     # subPath mount would keep pointing at the old inode.
     worker:
       enabled: true
-      replicaCount: 0
+      replicaCount: 0 # Chart input only; post-render removes /spec/replicas for HPA ownership.
       image: *hindsight-api-image
       env:
         <<: *hindsight-env
         HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
         HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
         HINDSIGHT_API_DB_POOL_MIN_SIZE: "2"
-        HINDSIGHT_API_DB_POOL_MAX_SIZE: "4"
-        HINDSIGHT_API_WORKER_MAX_SLOTS: "2"
-        HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "0"
+        HINDSIGHT_API_DB_POOL_MAX_SIZE: "3"
+        HINDSIGHT_API_WORKER_MAX_SLOTS: "3"
+        HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "1"
         # The API stays the only migrator.
         HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP: "false"
       extraVolumes: *codex-auth-volumes
