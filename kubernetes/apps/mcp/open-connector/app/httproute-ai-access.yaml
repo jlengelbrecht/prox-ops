@@ -1,0 +1,15 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: open-connector-ai-access
+spec:
+  parentRefs:
+    - {name: envoy-internal, namespace: network, sectionName: https}
+  hostnames: [mcp.homelab0.org]
+  rules:
+    - matches:
+        - path: {type: Exact, value: /v1/proxy/one_password}
+          method: POST
+      backendRefs:
+        - {name: open-connector, port: 3000}

@@ -38,13 +38,16 @@ spec:
             - {name: OOMOL_CONNECT_DATA_DIR, value: /app/data}
             - {name: OOMOL_CONNECT_ORIGIN, value: "https://open-connector.homelab0.org"}
             - {name: OOMOL_CONNECT_ALLOWED_ACTIONS, value: hackernews.get_top_stories}
-            - {name: OOMOL_CONNECT_BLOCKED_PROXIES, value: "*"}
+            - {name: OOMOL_CONNECT_ALLOWED_PROXIES, value: one_password}
             # The native provider rejects .local URLs. The pod DNS search path resolves the short Service name.
             - {name: OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS, value: onepassword-connect}
             - {name: NODE_EXTRA_CA_CERTS, value: /run/onepassword-connect/tls.crt}
-          envFrom:
-            - secretRef:
-                name: open-connector-secrets
+            - name: OOMOL_CONNECT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: open-connector-secrets, key: OOMOL_CONNECT_ENCRYPTION_KEY}
+            - name: OOMOL_CONNECT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: {name: open-connector-secrets, key: OOMOL_CONNECT_ADMIN_TOKEN}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
